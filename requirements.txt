@@ -1,0 +1,25 @@
+# --- Núcleo do Streamlit ---
+streamlit==1.38.0
+streamlit-folium
+folium
+
+# --- Análises e gráficos ---
+plotly
+matplotlib
+
+# --- Dados e tabelas ---
+pandas
+numpy
+geopandas
+
+# --- Manipulação de rasters ---
+rasterio
+
+# --- Imagens e utilidades ---
+Pillow
+imageio
+
+# --- Dependências de geoprocessamento (usadas pelo geopandas/rasterio) ---
+shapely
+fiona
+pyproj
