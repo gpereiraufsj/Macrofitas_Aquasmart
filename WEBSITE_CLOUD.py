@@ -39,6 +39,12 @@ with st.sidebar:
 # =====================================================================
 df_area = pd.read_csv(csv_path)
 df_area['Data'] = pd.to_datetime(df_area['Data'])
+
+# 🔹 Converter para hectares
+df_area["Area_ha"] = df_area["Area_m2"] / 10_000
+if "Area_smooth" in df_area.columns:
+    df_area["Area_smooth_ha"] = df_area["Area_smooth"] / 10_000
+
 min_date, max_date = df_area['Data'].min(), df_area['Data'].max()
 
 start_date, end_date = st.sidebar.date_input(
@@ -46,9 +52,31 @@ start_date, end_date = st.sidebar.date_input(
 
 filtradas = df_area[(df_area['Data'] >= pd.to_datetime(start_date)) & (df_area['Data'] <= pd.to_datetime(end_date))]
 
-fig_area = px.line(filtradas, x="Data", y=["Area_m2", "Area_smooth"], markers=True,
-              labels={"value": "Área (m²)", "variable": "Tipo"},
-              title="Evolução da Área de Macrófitas no Espelho d'água")
+# =====================================================================
+# ESTATÍSTICAS
+# =====================================================================
+total_ha = filtradas["Area_ha"].sum()
+max_ha = filtradas["Area_ha"].max()
+data_max = filtradas.loc[filtradas["Area_ha"].idxmax(), "Data"].strftime("%Y-%m-%d")
+mean_ha = filtradas.groupby(filtradas['Data'].dt.year)["Area_ha"].mean()
+
+st.markdown("### 📌 Estatísticas do Período Selecionado")
+col1, col2, col3 = st.columns(3)
+col1.metric("🌱 Área Total", f"{total_ha:,.2f} ha")
+col2.metric("📈 Máxima", f"{max_ha:,.2f} ha", data_max)
+col3.metric("📊 Média Anual", f"{mean_ha.mean():,.2f} ha")
+
+# =====================================================================
+# GRÁFICO TEMPORAL
+# =====================================================================
+fig_area = px.line(
+    filtradas,
+    x="Data",
+    y=["Area_ha", "Area_smooth_ha"] if "Area_smooth_ha" in filtradas.columns else ["Area_ha"],
+    markers=True,
+    labels={"value": "Área (ha)", "variable": "Tipo"},
+    title="Evolução da Área de Macrófitas (ha)"
+)
 st.plotly_chart(fig_area, use_container_width=True)
 
 # =====================================================================
@@ -118,23 +146,9 @@ with col_grafico:
 st.subheader("📷 Visualização: RGB | NDVI | Classificação")
 fig_path = os.path.join(output_vis_folder, f"fig_macrofitas_{selected_date}.png")
 if os.path.exists(fig_path):
-    st.image(Image.open(fig_path), use_column_width=True)
+    st.image(Image.open(fig_path), use_collumn_width=True)
 else:
     st.warning(f"Imagem não encontrada: {fig_path}")
-
-# =====================================================================
-# COMPARAÇÃO MENSAL
-# =====================================================================
-st.subheader("📆 Análise Mensal de Área Média")
-df_area['Mês'] = df_area['Data'].dt.month
-mensal = df_area.groupby('Mês').mean(numeric_only=True).reset_index()
-
-fig_mensal = px.bar(mensal, x="Mês", y=mensal['Area_m2'] / 10000, labels={"y": "Área Média (ha)"},
-                    title="Área Média de Macrófitas por Mês", text_auto='.2s')
-st.plotly_chart(fig_mensal, use_container_width=True)
-
-st.markdown("---")
-st.caption("Versão científica interativa • Desenvolvido com 💚 para o Projeto AQUASMART")
 
 # =====================================================================
 # COMPARAÇÃO ENTRE ANOS
@@ -148,13 +162,12 @@ df_y1 = df_area[df_area['Data'].dt.year == year1].groupby(df_area['Data'].dt.mon
 df_y2 = df_area[df_area['Data'].dt.year == year2].groupby(df_area['Data'].dt.month).mean(numeric_only=True)
 
 fig_comp = px.line(title=f"Comparação Anual: {year1} vs {year2}")
-fig_comp.add_scatter(x=df_y1.index, y=df_y1['Area_m2'], name=f"{year1}", mode="lines+markers")
-fig_comp.add_scatter(x=df_y2.index, y=df_y2['Area_m2'], name=f"{year2}", mode="lines+markers")
-fig_comp.update_layout(xaxis_title="Mês", yaxis_title="Área (m²)")
+fig_comp.add_scatter(x=df_y1.index, y=df_y1['Area_ha'], name=f"{year1}", mode="lines+markers")
+fig_comp.add_scatter(x=df_y2.index, y=df_y2['Area_ha'], name=f"{year2}", mode="lines+markers")
+fig_comp.update_layout(xaxis_title="Mês", yaxis_title="Área (ha)")
 st.plotly_chart(fig_comp, use_container_width=True)
 
 st.markdown("---")
-
 st.caption("Versão científica interativa • Desenvolvido com 💚 para o Projeto AQUASMART")
 
 
