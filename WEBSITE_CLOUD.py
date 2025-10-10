@@ -25,7 +25,7 @@ base_path = pathlib.Path(__file__).parent
 classif_folder = base_path / "saida_SIRGAS2000"
 output_vis_folder = base_path / "output_vis"
 csv_path = classif_folder / "area_macrofitas.csv"
-logo_path = base_path / "Logo Aquasmart - RGB 02.png"
+logo_path = base_path / "Logo.png"
 
 st.set_page_config(layout="wide", page_title="Macrofitas Monitoramento")
 
@@ -153,4 +153,5 @@ fig_comp.update_layout(xaxis_title="Mês", yaxis_title="Área (m²)")
 st.plotly_chart(fig_comp, use_container_width=True)
 
 st.markdown("---")
+
 st.caption("Versão científica interativa • Desenvolvido com 💚 para o Projeto AQUASMART")
