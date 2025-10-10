@@ -118,7 +118,7 @@ with col_grafico:
 st.subheader("📷 Visualização: RGB | NDVI | Classificação")
 fig_path = os.path.join(output_vis_folder, f"fig_macrofitas_{selected_date}.png")
 if os.path.exists(fig_path):
-    st.image(Image.open(fig_path), use_container_width=True)
+    st.image(Image.open(fig_path), use_column_width=True)
 else:
     st.warning(f"Imagem não encontrada: {fig_path}")
 
@@ -156,6 +156,7 @@ st.plotly_chart(fig_comp, use_container_width=True)
 st.markdown("---")
 
 st.caption("Versão científica interativa • Desenvolvido com 💚 para o Projeto AQUASMART")
+
 
 
 
