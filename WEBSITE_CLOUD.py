@@ -30,7 +30,7 @@ logo_path = "https://raw.githubusercontent.com/gpereiraufsj/Macrofitas_Aquasmart
 st.set_page_config(layout="wide", page_title="Macrofitas Monitoramento")
 
 with st.sidebar:
-    st.image(logo_path, use_container_width=True)
+    st.image(logo_path, use_column_width=True)
     st.title("🌿 Macrofitas")
 
 # =====================================================================
@@ -155,5 +155,6 @@ st.plotly_chart(fig_comp, use_container_width=True)
 st.markdown("---")
 
 st.caption("Versão científica interativa • Desenvolvido com 💚 para o Projeto AQUASMART")
+
 
 
