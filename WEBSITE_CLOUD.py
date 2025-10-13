@@ -50,6 +50,22 @@ min_date, max_date = df_area['Data'].min(), df_area['Data'].max()
 start_date, end_date = st.sidebar.date_input(
     "📆 Intervalo de datas:", [min_date, max_date], min_value=min_date, max_value=max_date)
 
+# =====================================================================
+# COMPARAÇÃO MENSAL
+# =====================================================================
+st.subheader("📆 Análise Mensal de Área Média")
+df_area['Mês'] = df_area['Data'].dt.month
+mensal = df_area.groupby('Mês').mean(numeric_only=True).reset_index()
+
+fig_mensal = px.bar(mensal, x="Mês", y=mensal['Area_m2'] / 10000, labels={"y": "Área Média (ha)"},
+                    title="Área Média de Macrófitas por Mês", text_auto='.2s')
+st.plotly_chart(fig_mensal, use_container_width=True)
+
+st.markdown("---")
+st.caption("Versão científica interativa • Desenvolvido com 💚 para o Projeto AQUASMART")
+
+
+
 filtradas = df_area[(df_area['Data'] >= pd.to_datetime(start_date)) & (df_area['Data'] <= pd.to_datetime(end_date))]
 
 # =====================================================================
@@ -169,6 +185,7 @@ st.plotly_chart(fig_comp, use_container_width=True)
 
 st.markdown("---")
 st.caption("Versão científica interativa • Desenvolvido com 💚 para o Projeto AQUASMART")
+
 
 
 
