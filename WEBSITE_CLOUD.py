@@ -62,7 +62,7 @@ fig_mensal = px.bar(mensal, x="Mês", y=mensal['Area_m2'] / 10000, labels={"y": 
 st.plotly_chart(fig_mensal, use_container_width=True)
 
 st.markdown("---")
-st.caption("Versão científica interativa • Desenvolvido com 💚 para o Projeto AQUASMART")
+
 
 
 
@@ -185,6 +185,7 @@ st.plotly_chart(fig_comp, use_container_width=True)
 
 st.markdown("---")
 st.caption("Versão científica interativa • Desenvolvido com 💚 para o Projeto AQUASMART")
+
 
 
 
