@@ -632,6 +632,90 @@ else:
 
     st.markdown("---")
 
+# =================================================================
+# Climatologia mensal DA IMAGEM INTEIRA (figura)
+# =================================================================
+show_img_clim = st.checkbox("Exibir climatologia mensal da imagem (média espacial)", value=True)
+
+if show_img_clim:
+    st.markdown("### 🖼️ Climatologia mensal da imagem (média espacial)")
+
+    # Cache para não recalcular toda hora
+    @st.cache_data(show_spinner=False)
+    def compute_image_climatology(_var_key: str, ndvi_thr: float, use_fixed_range: bool,
+                                  vmin_fixed: float, vmax_fixed: float):
+        rows = []
+        for p in water_files:
+            dt_str = parse_date_from_filename(p)
+            dt = pd.to_datetime(dt_str)
+
+            try:
+                # usa a mesma função que você já tem (com filtro NDVI + zeros)
+                var_f, ndvi_f, ndwi_f, _ = compute_filtered_var_and_indices(p)
+
+                # opcional: considerar somente pixels dentro da escala fixa
+                if use_fixed_range:
+                    var_f = np.where(
+                        np.isfinite(var_f) & (var_f >= vmin_fixed) & (var_f <= vmax_fixed),
+                        var_f,
+                        np.nan
+                    )
+
+                vals = var_f[np.isfinite(var_f)]
+                if vals.size == 0:
+                    mean_spatial = np.nan
+                else:
+                    mean_spatial = float(np.nanmean(vals))
+
+                rows.append({"Data": dt, "Mes": int(dt.month), "Media_espacial": mean_spatial})
+
+            except Exception:
+                rows.append({"Data": dt, "Mes": int(dt.month), "Media_espacial": np.nan})
+
+        df = pd.DataFrame(rows).sort_values("Data")
+        clim = df.groupby("Mes")["Media_espacial"].mean().reset_index()
+        return df, clim
+
+    # Você escolhe: climatologia considerando todos válidos (NDVI+zeros)
+    # ou somente dentro da escala fixa.
+    use_fixed_range_for_clim = st.checkbox(
+        "Climatologia usando apenas pixels dentro da escala fixa",
+        value=True
+    )
+
+    df_img_ts, clim_img = compute_image_climatology(
+        _var_key=var_key,
+        ndvi_thr=NDVI_MACROFITAS_THR,
+        use_fixed_range=use_fixed_range_for_clim,
+        vmin_fixed=vmin_fixed,
+        vmax_fixed=vmax_fixed
+    )
+
+    # Figura (matplotlib)
+    import matplotlib.pyplot as plt
+
+    fig, ax = plt.subplots(figsize=(9.0, 3.2))
+    ax.plot(clim_img["Mes"], clim_img["Media_espacial"], marker="o")
+    ax.set_title(f"Climatologia mensal — média espacial da imagem • {label_unit}")
+    ax.set_xlabel("Mês")
+    ax.set_ylabel(label_unit)
+    ax.set_xticks(range(1, 13))
+    ax.grid(True, alpha=0.3)
+
+    # Se você quiser travar no intervalo fixo também:
+    ax.set_ylim(vmin_fixed, vmax_fixed)
+
+    st.pyplot(fig)
+    plt.close(fig)
+
+    # (Opcional) tabela para checar
+    with st.expander("Ver tabela (série espacial por data e climatologia mensal)"):
+        st.write("Série (média espacial por data):")
+        st.dataframe(df_img_ts, use_container_width=True)
+        st.write("Climatologia mensal (média por mês):")
+        st.dataframe(clim_img, use_container_width=True)
+
+    
     # =================================================================
     # NDVI e NDWI ao final (diagnóstico)
     # =================================================================
@@ -649,6 +733,7 @@ else:
             st.image(colormap_rgba(ndwi_u8, "cividis"), use_column_width=True)
 
     st.caption("Qualidade da Água • filtro: NDVI ≤ 0.5 (remove macrófitas). Pixels zerados ocultos. NDWI exibido apenas para diagnóstico.")
+
 
 
 
