@@ -1,5 +1,5 @@
 # Requisitos:
-# pip install streamlit rasterio numpy pandas plotly folium geopandas streamlit-folium pillow
+# pip install streamlit rasterio numpy pandas plotly folium streamlit-folium pillow
 
 import streamlit as st
 import rasterio
@@ -15,23 +15,23 @@ from folium import raster_layers
 from PIL import Image
 
 # =====================================================================
-# CONFIGURAÇÃO (PORTÁVEL: Windows + Streamlit Cloud)
+# CONFIGURAÇÃO (PORTÁVEL)
 # =====================================================================
-APP_DIR = Path(__file__).resolve().parent
+base_path = Path(__file__).resolve().parent
 
-# ✅ Recomendo organizar assim no repositório:
-# data/area_macrofitas.csv
-# data/classificados/*.tif
-# output_vis/fig_macrofitas_YYYY-MM-DD.png
-# assets/logo.png
+# Pastas (podem ou não existir, vamos validar)
+classif_folder = base_path / "saida_SIRGAS2000"
+output_vis_folder = base_path / "output_vis"
 
-DATA_DIR = APP_DIR / "data"
-CLASSIF_DIR = DATA_DIR / "classificados"
-OUTPUT_VIS_DIR = APP_DIR / "output_vis"
-ASSETS_DIR = APP_DIR / "assets"
+# CSV: tenta /data/ primeiro, senão tenta na raiz (seu caso)
+csv_candidates = [
+    base_path / "data" / "area_macrofitas.csv",
+    base_path / "area_macrofitas.csv",
+]
+csv_path = next((p for p in csv_candidates if p.exists()), None)
 
-csv_path = DATA_DIR / "area_macrofitas.csv"
-logo_path = ASSETS_DIR / "logo.png"
+# Logo por URL (como você já usava)
+logo_path = "https://raw.githubusercontent.com/gpereiraufsj/Macrofitas_Aquasmart/main/Logo.png"
 
 st.set_page_config(layout="wide", page_title="AQUASMART • Dashboard Científico")
 
@@ -39,15 +39,9 @@ st.set_page_config(layout="wide", page_title="AQUASMART • Dashboard Científic
 # SIDEBAR • LOGO + NAVEGAÇÃO
 # =====================================================================
 with st.sidebar:
-    # Logo com fallback (não derruba o app)
-    if logo_path.exists():
-        st.image(str(logo_path), use_container_width=True)
-    else:
-        st.markdown("### AQUASMART")
-        st.caption("Logo não encontrado em: assets/logo.png")
-
-    st.markdown("## Dashboard")
-    st.caption("Monitoramento • Macrófitas e Qualidade da Água")
+    st.image(logo_path, use_container_width=True)
+    st.markdown("## AQUASMART")
+    st.caption("Dashboard científico • Monitoramento")
 
     pagina = st.radio(
         "Navegação",
@@ -70,11 +64,11 @@ if pagina == "🌿 Macrófitas":
     st.markdown("## 🌿 Monitoramento de Macrófitas")
 
     # ---------------------------
-    # CARREGAR CSV (com validação)
+    # CARREGAR CSV (com fallback)
     # ---------------------------
-    if not csv_path.exists():
-        st.error(f"CSV não encontrado: {csv_path}")
-        st.info("Coloque o arquivo em `data/area_macrofitas.csv` no seu repositório.")
+    if csv_path is None:
+        st.error("CSV não encontrado.")
+        st.info("Coloque `area_macrofitas.csv` na raiz do repositório OU em `data/area_macrofitas.csv`.")
         st.stop()
 
     df_area = pd.read_csv(csv_path)
@@ -108,20 +102,19 @@ if pagina == "🌿 Macrófitas":
         (df_area["Data"] <= pd.to_datetime(end_date))
     ].copy()
 
-    # ---------------------------
-    # KPIs
-    # ---------------------------
-    st.markdown("### Indicadores do período selecionado")
-
     if len(filtradas) == 0:
         st.warning("Nenhum dado no intervalo selecionado.")
         st.stop()
 
+    # ---------------------------
+    # KPIs
+    # ---------------------------
     total_ha = filtradas["Area_ha"].sum()
     max_ha = filtradas["Area_ha"].max()
     data_max = filtradas.loc[filtradas["Area_ha"].idxmax(), "Data"].strftime("%Y-%m-%d")
     mean_ha = filtradas.groupby(filtradas["Data"].dt.year)["Area_ha"].mean()
 
+    st.markdown("### Indicadores do período selecionado")
     c1, c2, c3 = st.columns(3)
     c1.metric("🌱 Área Total", f"{total_ha:,.2f} ha")
     c2.metric("📈 Máxima", f"{max_ha:,.2f} ha", data_max)
@@ -151,23 +144,31 @@ if pagina == "🌿 Macrófitas":
     st.markdown("---")
 
     # ---------------------------
-    # LISTAR TIFs CLASSIFICADOS (com validação)
+    # TIFs CLASSIFICADOS (fallback)
     # ---------------------------
-    if not CLASSIF_DIR.exists():
-        st.error(f"Pasta de TIFs não encontrada: {CLASSIF_DIR}")
-        st.info("Coloque os arquivos .tif em `data/classificados/` no repositório.")
-        st.stop()
+    # tenta pasta saida_SIRGAS2000, senão tenta raiz
+    classif_dirs = [
+        classif_folder,
+        base_path
+    ]
+    classif_files = []
+    for d in classif_dirs:
+        if d.exists():
+            files = sorted([p for p in d.glob("classificado_macrofitas_*.tif")])
+            if files:
+                classif_files = files
+                classif_folder = d
+                break
 
-    classif_files = sorted([p for p in CLASSIF_DIR.glob("classificado_macrofitas_*.tif")])
     if len(classif_files) == 0:
-        st.error("Nenhum arquivo encontrado com padrão: classificado_macrofitas_*.tif")
+        st.warning("Nenhum .tif encontrado (classificado_macrofitas_*.tif).")
+        st.info("Coloque os TIFs na raiz do repositório OU na pasta `saida_SIRGAS2000/`.")
         st.stop()
 
-    # Extrair datas do nome
     dates = [p.stem.replace("classificado_macrofitas_", "") for p in classif_files]
 
     selected_date = st.selectbox("📅 Selecione a data da imagem:", dates, index=len(dates) - 1)
-    file_selected = CLASSIF_DIR / f"classificado_macrofitas_{selected_date}.tif"
+    file_selected = classif_folder / f"classificado_macrofitas_{selected_date}.tif"
 
     # ---------------------------
     # MAPA + PONTO
@@ -181,9 +182,7 @@ if pagina == "🌿 Macrófitas":
             img = src.read(1)
             bounds = src.bounds
 
-        # ATENÇÃO: isto assume que bounds estão em lat/lon (EPSG:4326).
-        # Se seus TIFs estiverem em UTM (ex.: SIRGAS2000 / UTM), o folium ficará errado.
-        # Se esse for o seu caso, me diga o EPSG e eu corrijo a reprojeção.
+        # NOTE: assume bounds em EPSG:4326 (lat/lon). Se for UTM, precisa reprojetar.
         m = folium.Map(
             location=[(bounds.top + bounds.bottom) / 2, (bounds.left + bounds.right) / 2],
             zoom_start=13
@@ -240,15 +239,21 @@ if pagina == "🌿 Macrófitas":
     st.markdown("---")
 
     # ---------------------------
-    # FIGURA ESTÁTICA (opcional)
+    # FIGURA ESTÁTICA (fallback)
     # ---------------------------
     st.markdown("### 📷 RGB | NDVI | Classificação (figura estática)")
 
-    fig_path = OUTPUT_VIS_DIR / f"fig_macrofitas_{selected_date}.png"
-    if fig_path.exists():
+    # tenta output_vis/, senão tenta raiz
+    fig_candidates = [
+        output_vis_folder / f"fig_macrofitas_{selected_date}.png",
+        base_path / f"fig_macrofitas_{selected_date}.png",
+    ]
+    fig_path = next((p for p in fig_candidates if p.exists()), None)
+
+    if fig_path:
         st.image(Image.open(fig_path), use_container_width=True)
     else:
-        st.warning(f"Figura não encontrada (opcional): {fig_path}")
+        st.warning("Figura não encontrada (opcional).")
 
     st.markdown("---")
 
@@ -258,10 +263,6 @@ if pagina == "🌿 Macrófitas":
     st.markdown("### 📅 Comparação entre anos (média mensal em ha)")
 
     years = sorted(df_area["Data"].dt.year.unique())
-    if len(years) < 1:
-        st.warning("Sem anos disponíveis no CSV.")
-        st.stop()
-
     default_y1 = min(3, len(years) - 1)
     default_y2 = len(years) - 1
 
@@ -271,7 +272,6 @@ if pagina == "🌿 Macrófitas":
     with ycol2:
         year2 = st.selectbox("Ano 2:", years, index=default_y2)
 
-    # Agrupar por mês dentro do ano (média)
     d1 = df_area[df_area["Data"].dt.year == year1].copy()
     d2 = df_area[df_area["Data"].dt.year == year2].copy()
 
@@ -291,7 +291,6 @@ else:
     st.markdown("## 💧 Qualidade da Água")
     st.caption("Área reservada para indicadores físico-químicos e biológicos (placeholder).")
 
-    # KPIs placeholder
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Turbidez", "—")
     c2.metric("Clorofila-a", "—")
