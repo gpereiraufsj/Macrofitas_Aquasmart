@@ -403,11 +403,31 @@ else:
             ndvi = compute_ndvi(B, G, R, NIR)
             ndwi = compute_ndwi(G, NIR)
 
-            # máscara: manter apenas pixels NÃO macrófitas (NDVI <= 0.5)
-            valid_mask = np.isfinite(ndvi) & (ndvi <= NDVI_MACROFITAS_THR)
-
+            # ----------------------------
+            # Máscara "sem dado" / zerado
+            # ----------------------------
+            # Regra prática: se TODAS as bandas são 0 no pixel, é área fora/sem informação → ignora.
+            nodata0_mask = (B == 0) & (G == 0) & (R == 0) & (NIR == 0)
+            
+            # (opcional) também pode eliminar pixels com qualquer banda 0, se seu produto usa 0 como borda:
+            # nodata0_mask = nodata0_mask | (B == 0) | (G == 0) | (R == 0) | (NIR == 0)
+            
+            # ----------------------------
+            # Filtro macrófitas (NDVI)
+            # ----------------------------
+            valid_mask = (
+                np.isfinite(ndvi) &
+                (ndvi <= NDVI_MACROFITAS_THR) &
+                (~nodata0_mask)
+            )
+            
             var_raw = compute_water_variable(B, G, R, NIR, var_key)
+            
+            # Também remove zeros na variável (caso a equação gere 0 em bordas)
+            var_raw = np.where(var_raw == 0, np.nan, var_raw)
+            
             var_filt = np.where(valid_mask, var_raw, np.nan)
+
 
             folium_bounds = bounds_3857_to_4326(src.bounds)
 
@@ -592,6 +612,7 @@ else:
             st.image(colormap_rgba(ndwi_u8, "cividis"), use_column_width=True)
 
     st.caption("Qualidade da Água • filtro: NDVI ≤ 0.5 (remove macrófitas). NDWI exibido apenas para diagnóstico.")
+
 
 
 
