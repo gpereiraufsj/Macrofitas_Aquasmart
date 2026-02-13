@@ -128,40 +128,29 @@ def compute_water_variable(B, G, R, NIR, var_key: str):
         proxy = R / (B + G + EPS)                 # ~0–?
         vmin, vmax = 2.5, 20.0                    # NTU
     elif var_key == "secchi":
-    # Secchi (cm) como função inversa da turbidez (NTU) - exemplo estável:
-    # 1) calcula proxy de turbidez
-    proxy_turb = R / (B + G + EPS)
+        # Secchi derivado da turbidez (mais estável)
+        proxy_turb = R / (B + G + EPS)
+    
+        # Escala robusta da turbidez para 2.5–20 NTU
+        p2 = np.nanpercentile(proxy_turb, 2)
+        p98 = np.nanpercentile(proxy_turb, 98)
+    
+        if not np.isfinite(p2) or not np.isfinite(p98) or p98 <= p2:
+            return np.full_like(proxy_turb, np.nan, dtype="float32")
+    
+        turb01 = (proxy_turb - p2) / (p98 - p2 + EPS)
+        turb01 = np.clip(turb01, 0, 1)
+    
+        turb_nt = 2.5 + turb01 * (20.0 - 2.5)
+    
+        # Conversão para Secchi: turbidez baixa = alta transparência
+        sec01 = (turb_nt - 2.5) / (20.0 - 2.5 + EPS)
+        out = 100.0 - np.clip(sec01, 0, 1) * (100.0 - 20.0)
+    
+        out = np.clip(out, 20.0, 100.0).astype("float32")
 
-    # 2) normaliza turbidez proxy (robusto) e reescala para turbidez física (2.5–20 NTU)
-    p2 = np.nanpercentile(proxy_turb, 2)
-    p98 = np.nanpercentile(proxy_turb, 98)
-    if not np.isfinite(p2) or not np.isfinite(p98) or p98 <= p2:
-        return np.full_like(proxy_turb, np.nan, dtype="float32")
 
-    turb01 = (proxy_turb - p2) / (p98 - p2 + EPS)
-    turb01 = np.clip(turb01, 0, 1)
-    turb_nt = 2.5 + turb01 * (20.0 - 2.5)  # NTU
 
-    # 3) converte turbidez -> Secchi (cm) de forma inversa, dentro de 20–100
-    # turb_nt = 2.5 (água mais clara) -> secchi ~ 100
-    # turb_nt = 20  (água mais turva) -> secchi ~ 20
-    sec01 = (turb_nt - 2.5) / (20.0 - 2.5 + EPS)
-    out = 100.0 - sec01 * (100.0 - 20.0)   # cm
-    else:
-        raise ValueError("Variável desconhecida.")
-
-    # Normaliza o proxy para 0–1 usando percentis (robusto)
-    p2 = np.nanpercentile(proxy, 2)
-    p98 = np.nanpercentile(proxy, 98)
-    if not np.isfinite(p2) or not np.isfinite(p98) or p98 <= p2:
-        return np.full_like(proxy, np.nan, dtype="float32")
-
-    proxy01 = (proxy - p2) / (p98 - p2 + EPS)
-    proxy01 = np.clip(proxy01, 0, 1)
-
-    # Reescala para a faixa “física”
-    out = vmin + proxy01 * (vmax - vmin)
-    return out.astype("float32")
 def normalize_to_uint8_diag(a, pmin=2, pmax=98):
     """
     Normaliza um array float para uint8 (0–255) usando percentis (pmin–pmax),
@@ -825,6 +814,7 @@ else:
         "Qualidade da Água • filtro: NDVI ≤ 0.5 (remove macrófitas). "
         "Pixels zerados ocultos. NDWI exibido apenas para diagnóstico."
     )
+
 
 
 
