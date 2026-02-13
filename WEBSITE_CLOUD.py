@@ -350,15 +350,7 @@ if pagina == "🌿 Macrófitas":
     st.caption("Versão científica interativa • Desenvolvido com 💚 para o Projeto AQUASMART")
 
 # =====================================================================
-# PÁGINA 2 — QUALIDADE DA ÁGUA
-# - Remove "Comparar duas datas"
-# - NDVI > 0.5 remove macrófitas (mantém NDVI <= 0.5)
-# - NÃO recorta por shapefile
-# - NÃO mostra pixels zerados (B=G=R=NIR=0 e/ou var==0) -> vira NaN
-# - Escalas fixas por variável + unidades
-# - Mapa grande + colorbar
-# - Série temporal no ponto + Curva sazonal (climatologia mensal) + FIGURA de climatologia
-# - NDVI/NDWI diagnóstico ao final
+# PÁGINA 2 — QUALIDADE DA ÁGUA (SEM comparar datas)
 # =====================================================================
 else:
     st.subheader("💧 Qualidade da Água")
@@ -367,11 +359,10 @@ else:
         "pixels zerados são ocultados • NDWI apenas diagnóstico."
     )
 
-    NDVI_MACROFITAS_THR = 0.50  # remove macrófitas/veg aquática
+    NDVI_MACROFITAS_THR = 0.50
+    EPS_LOCAL = 1e-6
 
-    # ----------------------------
     # Intervalos fixos + unidades
-    # ----------------------------
     VAR_SPECS = {
         "chlor_a": {"label": "Clorofila-a", "unit": "µg/L", "vmin": 15.0, "vmax": 140.0},
         "turbidity": {"label": "Turbidez", "unit": "NTU", "vmin": 2.5, "vmax": 20.0},
@@ -396,18 +387,20 @@ else:
     # ----------------------------
     # Controles
     # ----------------------------
-    c1, c2, c3 = st.columns([1.6, 1.6, 1.0])
+    c1, c2, c3, c4 = st.columns([1.6, 1.6, 1.0, 1.2])
     with c1:
         var_label = st.selectbox("Variável:", list(var_map.keys()), index=0)
     with c2:
         selected_date = st.selectbox("Data (imagem):", water_dates, index=len(water_dates) - 1)
     with c3:
         cmap_name = st.selectbox("Colormap:", ["viridis", "cividis", "plasma", "inferno", "magma"], index=0)
+    with c4:
+        show_clim = st.checkbox("Exibir climatologia (média mensal)", value=True)
 
     var_key = var_map[var_label]
     spec = VAR_SPECS[var_key]
-    vmin_fixed = spec["vmin"]
-    vmax_fixed = spec["vmax"]
+    vmin_fixed = float(spec["vmin"])
+    vmax_fixed = float(spec["vmax"])
     unit = spec["unit"]
     label_unit = f"{spec['label']} ({unit})"
 
@@ -429,10 +422,10 @@ else:
             ndvi = compute_ndvi(B, G, R, NIR)
             ndwi = compute_ndwi(G, NIR)
 
-            # pixels zerados (borda/sem dado): todas as bandas == 0
+            # pixels zerados (borda/sem dado)
             zero_mask = (B == 0) & (G == 0) & (R == 0) & (NIR == 0)
 
-            # máscara: manter apenas pixels NÃO macrófitas (NDVI <= 0.5) e não-zeros
+            # máscara: mantém só NDVI <= 0.5 e não-zeros
             valid_mask = np.isfinite(ndvi) & (ndvi <= NDVI_MACROFITAS_THR) & (~zero_mask)
 
             var_raw = compute_water_variable(B, G, R, NIR, var_key)
@@ -458,59 +451,69 @@ else:
         st.error(f"Erro ao processar {tif_path.name}: {e}")
         st.stop()
 
-    map_arr = var_A
     map_title = f"{label_unit} • {selected_date}"
 
     # =================================================================
-    # Estatística espacial (somente pixels válidos)
+    # Estatística espacial (após filtro NDVI+zeros) + (dentro do limiar)
     # =================================================================
-    vals = map_arr[np.isfinite(map_arr)]
-    if vals.size == 0:
-        st.warning("Após filtro NDVI e remoção de zeros, não sobraram pixels válidos para mapear.")
+    vals_all = var_A[np.isfinite(var_A)]
+    if vals_all.size == 0:
+        st.warning("Após filtro NDVI e remoção de zeros, não sobraram pixels válidos.")
         st.stop()
 
-    stats = {
-        "n_pixels": int(vals.size),
-        "média": float(np.nanmean(vals)),
-        "mediana": float(np.nanmedian(vals)),
-        "p10": float(np.nanpercentile(vals, 10)),
-        "p90": float(np.nanpercentile(vals, 90)),
-        "mín": float(np.nanmin(vals)),
-        "máx": float(np.nanmax(vals)),
+    # estatística “na água” (filtro NDVI+zeros)
+    stats_all = {
+        "n": int(vals_all.size),
+        "média": float(np.nanmean(vals_all)),
+        "mediana": float(np.nanmedian(vals_all)),
+        "p10": float(np.nanpercentile(vals_all, 10)),
+        "p90": float(np.nanpercentile(vals_all, 90)),
     }
 
-    st.markdown("### 📊 Estatística espacial (pixels válidos após filtro)")
-    s1, s2, s3, s4 = st.columns(4)
-    s1.metric("N pixels válidos", f"{stats['n_pixels']:,}")
-    s2.metric("Média", f"{stats['média']:.3f}")
-    s3.metric("Mediana", f"{stats['mediana']:.3f}")
-    s4.metric("p10–p90", f"{stats['p10']:.3f} – {stats['p90']:.3f}")
+    # estatística “na escala” (intervalo fixo)
+    vals_range = vals_all[(vals_all >= vmin_fixed) & (vals_all <= vmax_fixed)]
+    stats_range = {
+        "n": int(vals_range.size),
+        "média": float(np.nanmean(vals_range)) if vals_range.size else np.nan,
+        "mediana": float(np.nanmedian(vals_range)) if vals_range.size else np.nan,
+    }
+
+    st.markdown("### 📊 Estatística espacial")
+    a1, a2, a3, a4 = st.columns(4)
+    a1.metric("Pixels válidos (NDVI+zeros)", f"{stats_all['n']:,}")
+    a2.metric("Média (válidos)", f"{stats_all['média']:.3f}")
+    a3.metric("Pixels dentro da escala", f"{stats_range['n']:,}")
+    a4.metric("Média (na escala)", "—" if np.isnan(stats_range["média"]) else f"{stats_range['média']:.3f}")
 
     # =================================================================
-    # Mapa grande + escala FIXA (fora do intervalo -> NaN -> invisível)
+    # Mapa: desenha APENAS valores dentro do intervalo fixo
+    # (fora do intervalo = transparente)
     # =================================================================
     st.markdown("### 🗺️ Mapa interativo (zoom pela extensão do GeoTIFF)")
 
     map_inrange = np.where(
-        np.isfinite(map_arr) & (map_arr >= vmin_fixed) & (map_arr <= vmax_fixed),
-        map_arr,
+        np.isfinite(var_A) & (var_A >= vmin_fixed) & (var_A <= vmax_fixed),
+        var_A,
         np.nan
     )
     valid = np.isfinite(map_inrange)
 
-    img_u8 = np.zeros_like(map_arr, dtype=np.uint8)
-    img_u8[valid] = (((map_inrange[valid] - vmin_fixed) / (vmax_fixed - vmin_fixed + EPS)) * 255).astype(np.uint8)
+    img_u8 = np.zeros_like(var_A, dtype=np.uint8)
+    img_u8[valid] = (((map_inrange[valid] - vmin_fixed) / (vmax_fixed - vmin_fixed + EPS_LOCAL)) * 255).astype(np.uint8)
 
     rgba = colormap_rgba(img_u8, cmap_name=cmap_name)
-    rgba[..., 3] = 0
-    rgba[valid, 3] = 255
+
+    # ✅ alpha CORRETO (isso estava derrubando as cores antes)
+    alpha = rgba[..., 3]
+    alpha[:] = 0
+    alpha[valid] = 255
+    rgba[..., 3] = alpha
 
     folium_bounds = meta_A["folium_bounds"]
     center_lat = (folium_bounds[0][0] + folium_bounds[1][0]) / 2
     center_lon = (folium_bounds[0][1] + folium_bounds[1][1]) / 2
 
     m = folium.Map(location=[center_lat, center_lon], tiles="OpenStreetMap", zoom_control=True)
-
     raster_layers.ImageOverlay(
         image=rgba,
         bounds=folium_bounds,
@@ -518,16 +521,16 @@ else:
         interactive=True,
         zindex=1
     ).add_to(m)
-
     m.fit_bounds(folium_bounds)
 
     legend_html = f"""
     <div style="
-        position: fixed; bottom: 30px; left: 30px; width: 360px; z-index: 9999;
+        position: fixed; bottom: 30px; left: 30px; width: 380px; z-index: 9999;
         background-color: white; padding: 10px; border: 1px solid #999; border-radius: 6px;
         font-size: 12px;">
         <b>{map_title}</b><br/>
         escala fixa: [{vmin_fixed:.2f}, {vmax_fixed:.2f}] {unit}<br/>
+        exibindo: somente valores dentro da escala (fora = transparente)<br/>
         filtro: NDVI ≤ {NDVI_MACROFITAS_THR:.2f} (remove macrófitas)<br/>
         pixels zerados: ocultos<br/>
         colormap: {cmap_name}<br/>
@@ -544,9 +547,10 @@ else:
     st.markdown("---")
 
     # =================================================================
-    # Série temporal no ponto + Curva sazonal (climatologia mensal)
+    # Série temporal no ponto (NÃO mata valores por limiar; eixo travado)
     # =================================================================
-    st.markdown("### 📈 Série temporal no ponto clicado (após filtro NDVI + zeros)")
+    st.markdown("### 📈 Série temporal no ponto clicado")
+
     if click and click.get("last_clicked"):
         lon = click["last_clicked"]["lng"]
         lat = click["last_clicked"]["lat"]
@@ -556,68 +560,64 @@ else:
         for p in water_files:
             dt = parse_date_from_filename(p)
             try:
-                var_f, ndvi_f, ndwi_f, meta_f = compute_filtered_var_and_indices(p)
+                var_f, ndvi_f, ndwi_f, _ = compute_filtered_var_and_indices(p)
                 with rasterio.open(p) as src:
-                    val_raw = sample_from_precomputed_array(src, var_f, lon, lat)
-
-                # coerente com o mapa: só considera se estiver dentro do intervalo fixo
-                val = val_raw
-                if np.isfinite(val_raw) and not (vmin_fixed <= val_raw <= vmax_fixed):
-                    val = np.nan
-
-                series.append({"Data": dt, "Valor": val, "Valor_raw": val_raw})
+                    val = sample_from_precomputed_array(src, var_f, lon, lat)
+                series.append({"Data": dt, "Valor": val})
             except:
-                series.append({"Data": dt, "Valor": np.nan, "Valor_raw": np.nan})
+                series.append({"Data": dt, "Valor": np.nan})
 
         df_ts = pd.DataFrame(series)
         df_ts["Data"] = pd.to_datetime(df_ts["Data"])
         df_ts = df_ts.sort_values("Data")
 
-        n_ok = int(df_ts["Valor"].notna().sum())
-        st.caption(f"Valores válidos no intervalo [{vmin_fixed}–{vmax_fixed}] {unit}: {n_ok} de {len(df_ts)} datas")
+        n_valid = int(df_ts["Valor"].notna().sum())
+        st.caption(f"Valores disponíveis no ponto (após NDVI+zeros): {n_valid} de {len(df_ts)} datas")
 
         fig_ts = px.line(
             df_ts, x="Data", y="Valor", markers=True,
-            title=f"Série temporal — {label_unit}",
+            title=f"Série temporal — {label_unit} (eixo travado no intervalo fixo)",
             labels={"Valor": label_unit}
         )
+        # ✅ eixo dentro do limiar fixo
         fig_ts.update_yaxes(range=[vmin_fixed, vmax_fixed])
         st.plotly_chart(fig_ts, use_container_width=True)
 
-        # Curva sazonal (climatologia mensal)
-        st.markdown("### 📆 Curva sazonal (média por mês no ponto)")
-        df_ts["Mês"] = df_ts["Data"].dt.month
-        clim = df_ts.groupby("Mês")["Valor"].mean(numeric_only=True).reset_index()
+        # =================================================================
+        # Climatologia (checkbox)
+        # =================================================================
+        if show_clim:
+            st.markdown("### 📆 Climatologia mensal (média por mês no ponto)")
+            df_ts["Mês"] = df_ts["Data"].dt.month
+            clim = df_ts.groupby("Mês")["Valor"].mean(numeric_only=True).reset_index()
 
-        fig_clim = px.line(
-            clim, x="Mês", y="Valor", markers=True,
-            title=f"Climatologia mensal no ponto — {label_unit}",
-            labels={"Valor": label_unit}
-        )
-        fig_clim.update_layout(xaxis=dict(dtick=1))
-        fig_clim.update_yaxes(range=[vmin_fixed, vmax_fixed])
-        st.plotly_chart(fig_clim, use_container_width=True)
+            fig_clim = px.line(
+                clim, x="Mês", y="Valor", markers=True,
+                title=f"Climatologia mensal — {label_unit}",
+                labels={"Valor": label_unit}
+            )
+            fig_clim.update_layout(xaxis=dict(dtick=1))
+            fig_clim.update_yaxes(range=[vmin_fixed, vmax_fixed])
+            st.plotly_chart(fig_clim, use_container_width=True)
 
-        # -----------------------------
-        # FIGURA de climatologia (PNG)
-        # -----------------------------
-        st.markdown("### 🖼️ Figura — Climatologia mensal (média no ponto)")
-        fig, ax = plt.subplots(figsize=(8.0, 3.0))
-        ax.plot(clim["Mês"], clim["Valor"], marker="o")
-        ax.set_title(f"Climatologia mensal — {label_unit}")
-        ax.set_xlabel("Mês")
-        ax.set_ylabel(label_unit)
-        ax.set_ylim(vmin_fixed, vmax_fixed)
-        ax.set_xticks(range(1, 13))
-        ax.grid(True, alpha=0.3)
-        st.pyplot(fig)
-        plt.close(fig)
+            # Figura (matplotlib)
+            st.markdown("### 🖼️ Figura — Climatologia mensal")
+            fig, ax = plt.subplots(figsize=(8.0, 3.0))
+            ax.plot(clim["Mês"], clim["Valor"], marker="o")
+            ax.set_title(f"Climatologia mensal — {label_unit}")
+            ax.set_xlabel("Mês")
+            ax.set_ylabel(label_unit)
+            ax.set_ylim(vmin_fixed, vmax_fixed)
+            ax.set_xticks(range(1, 13))
+            ax.grid(True, alpha=0.3)
+            st.pyplot(fig)
+            plt.close(fig)
 
         with st.expander("Tabela (série no ponto)"):
             st.dataframe(df_ts, use_container_width=True)
 
     else:
-        st.info("Clique em um ponto no mapa para extrair a série temporal e a curva sazonal.")
+        st.info("Clique em um ponto no mapa para extrair a série temporal (e climatologia, se marcada).")
 
     st.markdown("---")
 
@@ -638,5 +638,7 @@ else:
             st.image(colormap_rgba(ndwi_u8, "cividis"), use_column_width=True)
 
     st.caption("Qualidade da Água • filtro: NDVI ≤ 0.5 (remove macrófitas). Pixels zerados ocultos. NDWI exibido apenas para diagnóstico.")
+
+
 
 
