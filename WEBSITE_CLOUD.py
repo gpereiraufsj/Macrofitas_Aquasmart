@@ -657,15 +657,16 @@ else:
     with st.expander("Ver NDVI e NDWI (mapas)"):
         cA, cB = st.columns(2)
         with cA:
-            ndvi_u8, ndvi_min, ndvi_max = normalize_to_uint8(ndvi_A)
+            ndvi_u8, ndvi_min, ndvi_max = normalize_to_uint8_diag(ndvi_A)
             st.caption(f"NDVI • escala [{ndvi_min:.3f}, {ndvi_max:.3f}]")
             st.image(colormap_rgba(ndvi_u8, "viridis"), use_column_width=True)
         with cB:
-            ndwi_u8, ndwi_min, ndwi_max = normalize_to_uint8(ndwi_A)
+            ndwi_u8, ndwi_min, ndwi_max = normalize_to_uint8_diag(ndwi_A)
             st.caption(f"NDWI • escala [{ndwi_min:.3f}, {ndwi_max:.3f}]")
             st.image(colormap_rgba(ndwi_u8, "cividis"), use_column_width=True)
 
     st.caption("Qualidade da Água • filtro: NDVI ≤ 0.5 (remove macrófitas). Pixels zerados ocultos. NDWI exibido apenas para diagnóstico.")
+
 
 
 
