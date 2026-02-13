@@ -194,33 +194,6 @@ def make_colorbar_image(vmin: float, vmax: float, cmap_name: str, label: str = "
     buf.seek(0)
     return Image.open(buf)
 
-
-def load_roi_geometry(shp_path: str | pathlib.Path):
-    """Carrega geometria (unificada) do shapefile."""
-    gdf = gpd.read_file(shp_path)
-    if gdf.empty:
-        raise ValueError("Shapefile vazio.")
-    geom = unary_union(gdf.geometry)
-    return gdf, geom
-
-def roi_mask_for_raster(src, roi_geom_4326):
-    """
-    Cria máscara booleana (True dentro do ROI) no grid do raster.
-    roi_geom_4326: geometria em EPSG:4326.
-    """
-    # reprojetar ROI para CRS do raster
-    gdf_roi = gpd.GeoDataFrame(geometry=[roi_geom_4326], crs="EPSG:4326").to_crs(src.crs)
-    geom_raster_crs = gdf_roi.geometry.iloc[0]
-
-    mask_inside = ~geometry_mask(
-        [geom_raster_crs],
-        transform=src.transform,
-        invert=False,
-        out_shape=(src.height, src.width),
-        all_touched=False  # True se quiser incluir pixels tocados
-    )
-    # geometry_mask retorna True fora quando invert=False; por isso negamos
-    return mask_inside
 # =====================================================================
 # PÁGINA 1 — MACRÓFITAS (mantida igual)
 # =====================================================================
@@ -618,6 +591,7 @@ else:
             st.image(colormap_rgba(ndwi_u8, "cividis"), use_column_width=True)
 
     st.caption("Qualidade da Água • filtro: NDVI ≤ 0.5 (remove macrófitas). NDWI exibido apenas para diagnóstico.")
+
 
 
 
