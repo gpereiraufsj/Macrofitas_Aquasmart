@@ -149,12 +149,16 @@ def normalize_to_uint8(a, vmin=None, vmax=None):
 
     x = (a - vmin) / (vmax - vmin)
     x = np.clip(x, 0, 1)
-    return (x * 255).astype(np.uint8), vmin, vmax
+    return (x * 255).astype(np.uint8), float(vmin), float(vmax)
 
 def colormap_rgba(uint8_img, cmap_name="viridis"):
     cmap = cm.get_cmap(cmap_name)
     x = uint8_img.astype("float32") / 255.0
     rgba = (cmap(x) * 255).astype(np.uint8)
+
+    # Primeira cor (valor mínimo da escala) transparente
+    rgba[uint8_img == 0, 3] = 0
+
     return rgba
 
 def sample_from_precomputed_array(src, arr, lon, lat):
@@ -354,6 +358,34 @@ else:
 
     water_dates = [parse_date_from_filename(p) for p in water_files]
 
+    VAR_SPECS = {
+        "chlor_a": {
+            "label": "Clorofila-a",
+            "unit": "µg/L",
+            "vmin": 15.0,
+            "vmax": 140.0,
+        },
+        "turbidity": {
+            "label": "Turbidez",
+            "unit": "NTU",
+            "vmin": 2.5,
+            "vmax": 20.0,
+        },
+        "phycocyanin": {
+            "label": "Fitocianina",
+            "unit": "µg/L",
+            "vmin": 2.5,
+            "vmax": 22.0,
+        },
+        "secchi": {
+            "label": "Secchi",
+            "unit": "cm",
+            "vmin": 20.0,
+            "vmax": 100.0,
+        },
+    }
+
+    
     var_map = {
         "Clorofila-a (proxy)": "chlor_a",
         "Fitocianina (proxy)": "phycocyanin",
@@ -375,6 +407,13 @@ else:
         compare_mode = st.checkbox("Comparar duas datas", value=False)
 
     var_key = var_map[var_label]
+    spec = VAR_SPECS[var_key]
+    unit = spec["unit"]
+    vmin_fixed = spec["vmin"]
+    vmax_fixed = spec["vmax"]
+    
+    var_label_unit = f"{spec['label']} ({unit})"
+   
     tif_path = base_path / f"DATA_{selected_date}.tif"
 
     # Se comparar: escolher segunda data + tipo
@@ -447,7 +486,7 @@ else:
 
     # Se comparar:
     map_arr = var_A
-    map_title = f"{var_label} • {selected_date}"
+    map_title = f"{var_label_unit} • {selected_date}"
     if compare_mode and date_b:
         tif_path_B = base_path / f"DATA_{date_b}.tif"
         try:
@@ -501,7 +540,7 @@ else:
     st.markdown("### 🗺️ Mapa interativo (zoom pela extensão do GeoTIFF)")
 
     # normalização automática para exibição
-    img_u8, vmin, vmax = normalize_to_uint8(map_arr)
+    img_u8, vmin, vmax = normalize_to_uint8(map_arr, vmin=vmin_fixed, vmax=vmax_fixed)
     rgba = colormap_rgba(img_u8, cmap_name=cmap_name)
 
     folium_bounds = meta_A["folium_bounds"]
@@ -528,7 +567,7 @@ else:
         background-color: white; padding: 10px; border: 1px solid #999; border-radius: 6px;
         font-size: 12px;">
         <b>{map_title}</b><br/>
-        escala: [{vmin:.3f}, {vmax:.3f}]<br/>
+        escala: [{vmin:.2f}, {vmax:.2f}] {unit}<br/>
         filtro: NDVI ≤ {NDVI_MACROFITAS_THR:.2f} (remove macrófitas)<br/>
         colormap: {cmap_name}<br/>
         <span style="color:#666;">(equações genéricas)</span>
@@ -539,7 +578,7 @@ else:
     click = st_folium(m, width=1200, height=700)
 
     # Colorbar real (escala visual)
-    cb_img = make_colorbar_image(vmin=vmin, vmax=vmax, cmap_name=cmap_name, label=var_label)
+    cb_img = make_colorbar_image(vmin=vmin, vmax=vmax, cmap_name=cmap_name, label=var_label_unit)
     st.image(cb_img, use_column_width=False)
 
     st.markdown("---")
@@ -570,8 +609,8 @@ else:
 
         fig_ts = px.line(
             df_ts, x="Data", y="Valor", markers=True,
-            title=f"Série temporal — {var_label} (NDVI ≤ {NDVI_MACROFITAS_THR})",
-            labels={"Valor": var_label}
+            title=f"Série temporal — {var_label_unit} (NDVI ≤ {NDVI_MACROFITAS_THR})",
+            labels={"Valor": var_label_unit}
         )
         st.plotly_chart(fig_ts, use_container_width=True)
 
@@ -582,8 +621,8 @@ else:
 
         fig_clim = px.line(
             clim, x="Mês", y="Valor", markers=True,
-            title=f"Climatologia mensal no ponto — {var_label}",
-            labels={"Valor": var_label}
+            title=f"Série temporal — {var_label_unit} (NDVI ≤ {NDVI_MACROFITAS_THR})",
+            labels={"Valor": var_label_unit}
         )
         fig_clim.update_layout(xaxis=dict(dtick=1))
         st.plotly_chart(fig_clim, use_container_width=True)
@@ -612,6 +651,7 @@ else:
             st.image(colormap_rgba(ndwi_u8, "cividis"), use_column_width=True)
 
     st.caption("Qualidade da Água • filtro: NDVI ≤ 0.5 (remove macrófitas). NDWI exibido apenas para diagnóstico.")
+
 
 
 
