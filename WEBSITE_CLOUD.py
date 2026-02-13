@@ -134,25 +134,22 @@ def compute_water_variable(B, G, R, NIR, var_key: str):
         raise ValueError("Variável desconhecida.")
     return out
 
-def normalize_to_uint8(a, vmin, vmax):
-    a = a.copy()
+def normalize_to_uint8_diag(a, pmin=2, pmax=98):
+    a = a.astype("float32")
+    valid = np.isfinite(a)
+    out = np.zeros_like(a, dtype=np.uint8)
+    if not np.any(valid):
+        return out, 0.0, 1.0
 
-    # máscara de valores válidos (dentro do range e finitos)
-    finite = np.isfinite(a)
-    inrange = finite & (a >= vmin) & (a <= vmax)
+    vmin = float(np.nanpercentile(a, pmin))
+    vmax = float(np.nanpercentile(a, pmax))
+    if vmax <= vmin:
+        vmax = vmin + 1e-6
 
-    u = np.zeros_like(a, dtype=np.uint8)  # 0 = transparente
-
-    if not np.any(inrange):
-        return u, float(vmin), float(vmax)
-
-    x = (a[inrange] - vmin) / (vmax - vmin + EPS)  # 0..1
+    x = (a - vmin) / (vmax - vmin)
     x = np.clip(x, 0, 1)
-
-    # 1..255 (0 reservado para transparente)
-    u[inrange] = (x * 254 + 1).astype(np.uint8)
-
-    return u, float(vmin), float(vmax)
+    out[valid] = (x[valid] * 255).astype(np.uint8)
+    return out, vmin, vmax
     
 def colormap_rgba(uint8_img, cmap_name="viridis"):
     cmap = cm.get_cmap(cmap_name)
@@ -522,6 +519,7 @@ else:
         ndwi_u8, ndwi_min, ndwi_max = normalize_to_uint8(ndwi_A)
         st.caption(f"NDWI [{ndwi_min:.2f} – {ndwi_max:.2f}]")
         st.image(colormap_rgba(ndwi_u8, "cividis"), use_column_width=True)
+
 
 
 
