@@ -310,13 +310,23 @@ if pagina == "🌿 Macrófitas":
 # =====================================================================
 # PÁGINA 2 — QUALIDADE DA ÁGUA (ÁGUA-ONLY + REMOVE MACRÓFITAS por NDVI)
 # =====================================================================
+# =====================================================================
+# PÁGINA 2 — QUALIDADE DA ÁGUA (MAPA GRANDE + SÉRIE EMBAIXO, SEM SLIDERS)
+# =====================================================================
 else:
     st.subheader("💧 Qualidade da Água")
-    st.caption("Derivado de DATA_*.tif (EPSG:3857) • máscara água (NDWI) + filtro NDVI (remove macrófitas).")
+    st.caption("Derivado de DATA_*.tif (EPSG:3857) • máscara automática: NDWI (água) + filtro NDVI (remove macrófitas).")
+
+    # ----------------------------
+    # Parâmetros fixos de máscara
+    # ----------------------------
+    NDWI_THR = 0.05     # água
+    NDVI_VEG_THR = 0.20 # remove vegetação/macrófitas (NDVI > 0.20)
 
     water_files = list_water_files(base_path)
     if len(water_files) == 0:
         st.warning("Nenhum arquivo encontrado com padrão DATA_*.tif na raiz do repositório.")
+        st.info("Adicione os GeoTIFFs como: DATA_YYYY-MM-DD.tif (ex.: DATA_2024-06-01.tif).")
         st.stop()
 
     water_dates = [parse_date_from_filename(p) for p in water_files]
@@ -328,8 +338,10 @@ else:
         "Secchi (proxy)": "secchi",
     }
 
-    # ---- controles ----
-    c1, c2, c3 = st.columns([1.2, 1.2, 1.0])
+    # ----------------------------
+    # Controles (simples)
+    # ----------------------------
+    c1, c2, c3 = st.columns([1.4, 1.4, 1.0])
     with c1:
         var_label = st.selectbox("Variável:", list(var_map.keys()), index=0)
     with c2:
@@ -340,23 +352,9 @@ else:
     var_key = var_map[var_label]
     tif_path = base_path / f"DATA_{selected_date}.tif"
 
-    st.markdown("### Máscaras (ajuste fino)")
-    m1, m2, m3 = st.columns(3)
-    with m1:
-        ndwi_thr = st.slider("NDWI mínimo (água)", -0.5, 0.5, 0.05, 0.01)
-    with m2:
-        ndvi_veg_thr = st.slider("NDVI máximo (remover vegetação/macrófitas acima)", -0.2, 0.8, 0.20, 0.01)
-    with m3:
-        auto_scale = st.checkbox("Auto-escala (p2–p98)", value=True)
-
-    if not auto_scale:
-        s1, s2 = st.columns(2)
-        with s1:
-            vmin_user = st.number_input("vmin", value=0.0)
-        with s2:
-            vmax_user = st.number_input("vmax", value=1.0)
-
-    # ---- computar mapa na data selecionada ----
+    # ----------------------------
+    # Computar mapa (após máscara)
+    # ----------------------------
     with rasterio.open(tif_path) as src:
         if src.count < 4:
             st.error("Os DATA_*.tif precisam ter 4 bandas (B, G, R, NIR).")
@@ -367,115 +365,100 @@ else:
         R = read_band(src, 3)
         NIR = read_band(src, 4)
 
-        valid_mask, ndvi, ndwi = compute_masks(B, G, R, NIR, ndwi_thr=ndwi_thr, ndvi_veg_thr=ndvi_veg_thr)
+        valid_mask, ndvi, ndwi = compute_masks(B, G, R, NIR, ndwi_thr=NDWI_THR, ndvi_veg_thr=NDVI_VEG_THR)
         var_raw = compute_water_variable(B, G, R, NIR, var_key)
 
-        # aplicar máscara (só água sem vegetação)
+        # aplica máscara final
         var_arr = np.where(valid_mask, var_raw, np.nan)
 
-        # bounds em 3857 -> folium em 4326
+        # bounds 3857 -> 4326 (folium)
         folium_bounds = bounds_3857_to_4326(src.bounds)
 
-    # overlay
-    if auto_scale:
-        img_u8, vmin, vmax = normalize_to_uint8(var_arr)
-    else:
-        img_u8, vmin, vmax = normalize_to_uint8(var_arr, vmin=vmin_user, vmax=vmax_user)
-
+    # normalização automática
+    img_u8, vmin, vmax = normalize_to_uint8(var_arr)
     rgba = colormap_rgba(img_u8, cmap_name=cmap_name)
 
-    # ---- layout mapa + série ----
-    col_map, col_ts = st.columns([1, 1], gap="large")
+    # =================================================================
+    # MAPA GRANDE (FULL WIDTH) + CLICK
+    # =================================================================
+    st.markdown("### 🗺️ Mapa interativo (somente água, sem macrófitas)")
 
-    with col_map:
-        st.subheader("🗺️ Mapa interativo (zoom) — somente água (sem macrófitas)")
+    center_lat = (folium_bounds[0][0] + folium_bounds[1][0]) / 2
+    center_lon = (folium_bounds[0][1] + folium_bounds[1][1]) / 2
 
-        center_lat = (folium_bounds[0][0] + folium_bounds[1][0]) / 2
-        center_lon = (folium_bounds[0][1] + folium_bounds[1][1]) / 2
+    m = folium.Map(location=[center_lat, center_lon], zoom_start=13, tiles="OpenStreetMap")
 
-        m = folium.Map(location=[center_lat, center_lon], zoom_start=13, tiles="OpenStreetMap")
+    raster_layers.ImageOverlay(
+        image=rgba,
+        bounds=folium_bounds,
+        opacity=0.80,
+        interactive=True,
+        zindex=1
+    ).add_to(m)
 
-        raster_layers.ImageOverlay(
-            image=rgba,
-            bounds=folium_bounds,
-            opacity=0.80,
-            interactive=True,
-            zindex=1
-        ).add_to(m)
+    # legenda fixa
+    legend_html = f"""
+    <div style="
+        position: fixed; bottom: 30px; left: 30px; width: 280px; z-index: 9999;
+        background-color: white; padding: 10px; border: 1px solid #999; border-radius: 6px;
+        font-size: 12px;">
+        <b>{var_label}</b><br/>
+        escala: [{vmin:.3f}, {vmax:.3f}]<br/>
+        máscara: NDWI &gt; {NDWI_THR:.2f} (água) <br/>
+        filtro: NDVI &le; {NDVI_VEG_THR:.2f} (remove macrófitas) <br/>
+        <span style="color:#666;">(equações genéricas)</span>
+    </div>
+    """
+    m.get_root().html.add_child(folium.Element(legend_html))
 
-        # legenda
-        legend_html = f"""
-        <div style="
-            position: fixed; bottom: 30px; left: 30px; width: 260px; z-index: 9999;
-            background-color: white; padding: 10px; border: 1px solid #999; border-radius: 6px;
-            font-size: 12px;">
-            <b>{var_label}</b><br/>
-            escala: [{vmin:.3f}, {vmax:.3f}]<br/>
-            NDWI &gt; {ndwi_thr:.2f} (água) <br/>
-            NDVI &le; {ndvi_veg_thr:.2f} (remove macrófitas) <br/>
-            <span style="color:#666;">(equações genéricas)</span>
-        </div>
-        """
-        m.get_root().html.add_child(folium.Element(legend_html))
-
-        click = st_folium(m, width=650, height=520)
-
-    with col_ts:
-        st.subheader("📈 Série temporal no ponto (respeitando máscaras)")
-
-        if click and click.get("last_clicked"):
-            lon = click["last_clicked"]["lng"]
-            lat = click["last_clicked"]["lat"]
-            st.success(f"Coordenada (EPSG:4326): ({lat:.5f}, {lon:.5f})")
-
-            series = []
-            for p in water_files:
-                dt = parse_date_from_filename(p)
-                with rasterio.open(p) as src:
-                    try:
-                        B = read_band(src, 1)
-                        G = read_band(src, 2)
-                        R = read_band(src, 3)
-                        NIR = read_band(src, 4)
-
-                        valid_mask, _, _ = compute_masks(B, G, R, NIR, ndwi_thr=ndwi_thr, ndvi_veg_thr=ndvi_veg_thr)
-                        var_raw = compute_water_variable(B, G, R, NIR, var_key)
-                        var_arr_ts = np.where(valid_mask, var_raw, np.nan)
-
-                        val = sample_from_precomputed_array(src, var_arr_ts, lon, lat)
-                        series.append({"Data": dt, "Valor": val})
-                    except:
-                        series.append({"Data": dt, "Valor": np.nan})
-
-            df_ts = pd.DataFrame(series)
-            df_ts["Data"] = pd.to_datetime(df_ts["Data"])
-            df_ts = df_ts.sort_values("Data")
-
-            fig_ts = px.line(
-                df_ts, x="Data", y="Valor", markers=True,
-                title=f"Série temporal — {var_label} (após máscara água + filtro NDVI)",
-                labels={"Valor": var_label}
-            )
-            st.plotly_chart(fig_ts, use_container_width=True)
-
-            with st.expander("Ver tabela (valores no ponto)"):
-                st.dataframe(df_ts, use_container_width=True)
-
-        else:
-            st.info("Clique em um ponto no mapa para extrair a série temporal.")
+    # Mapa maior e centralizado (full width)
+    click = st_folium(m, width=1200, height=650)
 
     st.markdown("---")
 
-    # Extras úteis “científicos”
-    with st.expander("Diagnóstico rápido (NDVI/NDWI na data selecionada)"):
-        cA, cB = st.columns(2)
-        with cA:
-            ndvi_u8, ndvi_min, ndvi_max = normalize_to_uint8(ndvi)
-            st.caption("NDVI (normalizado p2–p98)")
-            st.image(colormap_rgba(ndvi_u8, "viridis"), use_column_width=True)
-        with cB:
-            ndwi_u8, ndwi_min, ndwi_max = normalize_to_uint8(ndwi)
-            st.caption("NDWI (normalizado p2–p98)")
-            st.image(colormap_rgba(ndwi_u8, "cividis"), use_column_width=True)
+    # =================================================================
+    # SÉRIE TEMPORAL EMBAIXO
+    # =================================================================
+    st.markdown("### 📈 Série temporal no ponto clicado (após máscara)")
 
-    st.caption("Qualidade da Água • máscara: NDWI (água) + NDVI (remove vegetação/macrófitas).")
+    if click and click.get("last_clicked"):
+        lon = click["last_clicked"]["lng"]
+        lat = click["last_clicked"]["lat"]
+        st.success(f"Coordenada (EPSG:4326): ({lat:.5f}, {lon:.5f})")
+
+        series = []
+        for p in water_files:
+            dt = parse_date_from_filename(p)
+            with rasterio.open(p) as src:
+                try:
+                    B = read_band(src, 1)
+                    G = read_band(src, 2)
+                    R = read_band(src, 3)
+                    NIR = read_band(src, 4)
+
+                    valid_mask, _, _ = compute_masks(B, G, R, NIR, ndwi_thr=NDWI_THR, ndvi_veg_thr=NDVI_VEG_THR)
+                    var_raw = compute_water_variable(B, G, R, NIR, var_key)
+                    var_arr_ts = np.where(valid_mask, var_raw, np.nan)
+
+                    val = sample_from_precomputed_array(src, var_arr_ts, lon, lat)
+                    series.append({"Data": dt, "Valor": val})
+                except:
+                    series.append({"Data": dt, "Valor": np.nan})
+
+        df_ts = pd.DataFrame(series)
+        df_ts["Data"] = pd.to_datetime(df_ts["Data"])
+        df_ts = df_ts.sort_values("Data")
+
+        fig_ts = px.line(
+            df_ts, x="Data", y="Valor", markers=True,
+            title=f"Série temporal — {var_label} (água filtrada)",
+            labels={"Valor": var_label}
+        )
+        st.plotly_chart(fig_ts, use_container_width=True)
+
+        with st.expander("Ver tabela (valores no ponto)"):
+            st.dataframe(df_ts, use_container_width=True)
+    else:
+        st.info("Clique em um ponto no mapa para extrair a série temporal.")
+
+
