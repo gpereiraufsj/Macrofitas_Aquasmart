@@ -136,8 +136,9 @@ def compute_water_variable(B, G, R, NIR, var_key: str):
 
 def normalize_to_uint8(a, vmin=None, vmax=None):
     a = a.copy()
-    valid = np.isfinite(a)
-    if not np.any(valid):
+
+    finite = np.isfinite(a)
+    if not np.any(finite):
         return np.zeros_like(a, dtype=np.uint8), 0.0, 1.0
 
     if vmin is None:
@@ -147,20 +148,25 @@ def normalize_to_uint8(a, vmin=None, vmax=None):
     if vmax <= vmin:
         vmax = vmin + 1e-6
 
-    x = (a - vmin) / (vmax - vmin)
+    x = np.zeros_like(a, dtype="float32")  # começa em 0 (vai virar transparente)
+    x[finite] = (a[finite] - vmin) / (vmax - vmin)
     x = np.clip(x, 0, 1)
-    return (x * 255).astype(np.uint8), float(vmin), float(vmax)
+
+    u = np.zeros_like(a, dtype=np.uint8)
+    # IMPORTANTÍSSIMO: valores finitos viram 1..255 (0 fica só para NaN/NoData)
+    u[finite] = (x[finite] * 254 + 1).astype(np.uint8)
+
+    return u, float(vmin), float(vmax)
 
 def colormap_rgba(uint8_img, cmap_name="viridis"):
     cmap = cm.get_cmap(cmap_name)
     x = uint8_img.astype("float32") / 255.0
     rgba = (cmap(x) * 255).astype(np.uint8)
 
-    # Primeira cor (valor mínimo da escala) transparente
+    # 0 = transparente (agora isso corresponde só a NaN/NoData)
     rgba[uint8_img == 0, 3] = 0
-
     return rgba
-
+    
 def sample_from_precomputed_array(src, arr, lon, lat):
     """Amostra valor de 'arr' (mesma grade do raster) no ponto clicado."""
     transformer = get_transformer_to_raster(src.crs)
@@ -651,6 +657,7 @@ else:
             st.image(colormap_rgba(ndwi_u8, "cividis"), use_column_width=True)
 
     st.caption("Qualidade da Água • filtro: NDVI ≤ 0.5 (remove macrófitas). NDWI exibido apenas para diagnóstico.")
+
 
 
 
