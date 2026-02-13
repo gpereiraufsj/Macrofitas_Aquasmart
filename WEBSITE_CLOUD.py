@@ -18,8 +18,6 @@ import pathlib
 from pyproj import Transformer
 import matplotlib.cm as cm
 from io import BytesIO
-from shapely.ops import unary_union
-from rasterio.features import geometry_mask
 
 # =====================================================================
 # CONFIGURAÇÃO INICIAL
@@ -591,6 +589,7 @@ else:
             st.image(colormap_rgba(ndwi_u8, "cividis"), use_column_width=True)
 
     st.caption("Qualidade da Água • filtro: NDVI ≤ 0.5 (remove macrófitas). NDWI exibido apenas para diagnóstico.")
+
 
 
 
