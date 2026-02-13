@@ -369,7 +369,8 @@ if pagina == "🌿 Macrófitas":
 
 # =====================================================================
 # PÁGINA 2 — QUALIDADE DA ÁGUA
-# (SEM comparar datas; COM mapa médio; COM climatologia mensal do ponto)
+# (SEM comparar datas; COM mapa médio; COM climatologia mensal do ponto;
+#  escala fixa + contraste por stretch interno (p2–p98) + gamma)
 # =====================================================================
 else:
     import matplotlib.pyplot as plt
@@ -387,17 +388,17 @@ else:
     NDVI_MACROFITAS_THR = 0.50
 
     # ----------------------------
-    # Intervalos fixos + unidades
+    # Escalas fixas + unidades
     # ----------------------------
     VAR_SPECS = {
-        "chlor_a":     {"label": "Clorofila-a",   "unit": "µg/L", "vmin": 15.0, "vmax": 140.0},
-        "turbidity":   {"label": "Turbidez",      "unit": "NTU",  "vmin": 2.5,  "vmax": 20.0},
-        "phycocyanin": {"label": "Fitocianina",   "unit": "µg/L", "vmin": 2.5,  "vmax": 22.0},
-        "secchi":      {"label": "Secchi",        "unit": "cm",   "vmin": 20.0, "vmax": 100.0},
+        "chlor_a":     {"label": "Clorofila-a", "unit": "µg/L", "vmin": 15.0, "vmax": 140.0},
+        "turbidity":   {"label": "Turbidez",    "unit": "NTU",  "vmin": 2.5,  "vmax": 20.0},
+        "phycocyanin": {"label": "Fitocianina", "unit": "µg/L", "vmin": 2.5,  "vmax": 22.0},
+        "secchi":      {"label": "Secchi",      "unit": "cm",   "vmin": 20.0, "vmax": 100.0},
     }
 
     # ----------------------------
-    # Funções (Página 2)
+    # Funções
     # ----------------------------
     def list_water_files(folder: pathlib.Path):
         return sorted([p for p in folder.glob("DATA_*.tif")])
@@ -430,7 +431,7 @@ else:
         return (G - NIR) / (G + NIR + EPS)
 
     def normalize_to_uint8_diag(a, vmin=None, vmax=None):
-        """Para NDVI/NDWI no diagnóstico (autoescala robusta por percentis)."""
+        """Para NDVI/NDWI (diagnóstico) — autoescala robusta."""
         a = a.astype("float32")
         valid = np.isfinite(a)
         if not np.any(valid):
@@ -457,8 +458,7 @@ else:
         norm = Normalize(vmin=vmin, vmax=vmax)
         cb = plt.colorbar(
             plt.cm.ScalarMappable(norm=norm, cmap=plt.get_cmap(cmap_name)),
-            cax=ax,
-            orientation="horizontal",
+            cax=ax, orientation="horizontal"
         )
         if label:
             cb.set_label(label, fontsize=10)
@@ -470,7 +470,7 @@ else:
         return Image.open(buf)
 
     def sample_from_array(src, arr, lon, lat):
-        """Amostra arr (mesma grade do raster) no ponto clicado (lon/lat em EPSG:4326)."""
+        """Amostra arr (mesma grade do raster) no ponto (lon/lat EPSG:4326)."""
         transformer = get_transformer_to_raster(src.crs)
         if transformer:
             x, y = transformer.transform(lon, lat)
@@ -482,9 +482,7 @@ else:
         v = arr[r, c]
         return float(v) if np.isfinite(v) else np.nan
 
-    # ----------------------------
-    # Proxy -> reescala para faixa física fixa (com Secchi estável)
-    # ----------------------------
+    # Proxy -> reescala para faixa física fixa (Secchi estável)
     def compute_water_variable_scaled(B, G, R, NIR, var_key: str):
         spec = VAR_SPECS[var_key]
         vmin, vmax = float(spec["vmin"]), float(spec["vmax"])
@@ -511,15 +509,15 @@ else:
             out = _robust_scale_to_range(proxy, vmin, vmax)
 
         elif var_key == "secchi":
-            # Secchi derivado da turbidez (mais estável que 1/turb proxy cru)
+            # Secchi derivado da turbidez (estável; evita saturar em 20)
             proxy_turb = R / (B + G + EPS)
-            turb_nt = _robust_scale_to_range(proxy_turb, 2.5, 20.0)  # NTU (fixo)
+
+            # turbidez física (2.5–20 NTU)
+            turb_nt = _robust_scale_to_range(proxy_turb, 2.5, 20.0)
 
             # turb 2.5 -> secchi ~100 ; turb 20 -> secchi ~20
             sec01 = (turb_nt - 2.5) / (20.0 - 2.5 + EPS)
-            out = (100.0 - np.clip(sec01, 0, 1) * (100.0 - 20.0)).astype("float32")
-
-            # garante faixa final
+            out = 100.0 - np.clip(sec01, 0, 1) * (100.0 - 20.0)
             out = np.clip(out, vmin, vmax).astype("float32")
 
         else:
@@ -527,9 +525,7 @@ else:
 
         return out
 
-    # ----------------------------
     # Ler/filtrar uma cena (NDVI + zeros)
-    # ----------------------------
     def compute_filtered_var_and_indices(tif_file: pathlib.Path, var_key: str):
         with rasterio.open(tif_file) as src:
             if src.count < 4:
@@ -543,10 +539,10 @@ else:
             ndvi = compute_ndvi(R, NIR)
             ndwi = compute_ndwi(G, NIR)
 
-            # máscara de zeros (sem dado)
+            # mascara de pixels zerados (sem dado)
             zero_mask = (B == 0) & (G == 0) & (R == 0) & (NIR == 0)
 
-            # filtro: remove macrófitas (NDVI > 0.5) e remove zeros
+            # manter: não-macrófita e não-zero
             valid_mask = np.isfinite(ndvi) & (ndvi <= NDVI_MACROFITAS_THR) & (~zero_mask)
 
             var_scaled = compute_water_variable_scaled(B, G, R, NIR, var_key)
@@ -592,7 +588,11 @@ else:
     with c5:
         show_point_clim = st.checkbox("Climatologia mensal do ponto", value=True)
 
+    # Contraste visual (não muda a escala fixa; só “stretch”)
     gamma = st.slider("Contraste do mapa (gamma)", 0.40, 2.00, 0.85, 0.05)
+
+    # “Stretch interno” para contraste (p2–p98 dentro da escala fixa)
+    use_internal_stretch = st.checkbox("Aumentar contraste (p2–p98 dentro da escala fixa)", value=True)
 
     var_key = var_map[var_label]
     spec = VAR_SPECS[var_key]
@@ -603,7 +603,7 @@ else:
     tif_path = base_path / f"DATA_{selected_date}.tif"
 
     # ----------------------------
-    # Carrega A (data selecionada)
+    # Carrega data selecionada
     # ----------------------------
     try:
         var_A, ndvi_A, ndwi_A, meta_A = compute_filtered_var_and_indices(tif_path, var_key)
@@ -612,7 +612,7 @@ else:
         st.stop()
 
     # ----------------------------
-    # Mapa médio (imagem composta = média pixel-a-pixel)
+    # Mapa médio (média pixel-a-pixel) — robusto (ignora pixels NaN)
     # ----------------------------
     @st.cache_data(show_spinner=True)
     def compute_mean_raster(_var_key: str, vmin_fixed: float, vmax_fixed: float):
@@ -623,7 +623,7 @@ else:
         for p in water_files:
             var_f, _, _, meta = compute_filtered_var_and_indices(p, _var_key)
 
-            # segurança: garante estar dentro da faixa final
+            # garante faixa final (escala fixa) e remove NaN
             var_f = np.where(
                 np.isfinite(var_f) & (var_f >= vmin_fixed) & (var_f <= vmax_fixed),
                 var_f,
@@ -646,6 +646,7 @@ else:
         mean_arr = np.full_like(sum_arr, np.nan, dtype=np.float32)
         ok = cnt_arr > 0
         mean_arr[ok] = (sum_arr[ok] / cnt_arr[ok]).astype(np.float32)
+
         return mean_arr, meta_ref, cnt_arr
 
     if use_mean_map:
@@ -682,34 +683,50 @@ else:
     s4.metric("p10–p90", f"{stats['p10']:.2f} – {stats['p90']:.2f} {unit}")
 
     # ----------------------------
-    # Mapa grande (escala fixa + contraste gamma)
+    # Normalização para visualização:
+    # - escala fixa (vmin_fixed–vmax_fixed) para comparabilidade
+    # - opcional: stretch interno (p2–p98) para contraste (SEM mudar escala oficial)
     # ----------------------------
-    st.markdown("### 🗺️ Mapa interativo (escala fixa + zoom pela extensão do GeoTIFF)")
+    if use_internal_stretch:
+        p2 = float(np.nanpercentile(vals, 2))
+        p98 = float(np.nanpercentile(vals, 98))
+        vmin_vis = max(vmin_fixed, p2)
+        vmax_vis = min(vmax_fixed, p98)
+        if vmax_vis <= vmin_vis:
+            vmin_vis, vmax_vis = vmin_fixed, vmax_fixed
+    else:
+        vmin_vis, vmax_vis = vmin_fixed, vmax_fixed
 
-    inrange = np.isfinite(map_arr) & (map_arr >= vmin_fixed) & (map_arr <= vmax_fixed)
+    # ----------------------------
+    # Mapa grande
+    # ----------------------------
+    st.markdown("### 🗺️ Mapa interativo (escala fixa + contraste)")
 
-    # normalização 0–1 na escala fixa
+    inrange_fixed = np.isfinite(map_arr) & (map_arr >= vmin_fixed) & (map_arr <= vmax_fixed)
+
     norm = np.zeros_like(map_arr, dtype=np.float32)
-    norm[inrange] = (map_arr[inrange] - vmin_fixed) / (vmax_fixed - vmin_fixed + EPS)
-    norm[inrange] = np.clip(norm[inrange], 0, 1)
+    # normaliza pelo range visual (vmin_vis–vmax_vis), mas mantém filtro pela escala fixa
+    norm[inrange_fixed] = (map_arr[inrange_fixed] - vmin_vis) / (vmax_vis - vmin_vis + EPS)
+    norm[inrange_fixed] = np.clip(norm[inrange_fixed], 0, 1)
 
     # gamma (contraste visual)
-    norm[inrange] = norm[inrange] ** float(gamma)
+    norm[inrange_fixed] = norm[inrange_fixed] ** float(gamma)
 
     img_u8 = np.zeros_like(map_arr, dtype=np.uint8)
-    img_u8[inrange] = (norm[inrange] * 255.0).astype(np.uint8)
+    img_u8[inrange_fixed] = (norm[inrange_fixed] * 255.0).astype(np.uint8)
 
     rgba = colormap_rgba(img_u8, cmap_name=cmap_name)
 
-    # alpha: só onde tem dado válido; fora -> transparente
+    # alpha: transparente fora dos pixels válidos (inclui zeros/NaN)
     rgba[..., 3] = 0
-    rgba[inrange, 3] = 255
+    rgba[inrange_fixed, 3] = 255
 
     folium_bounds = meta_use["folium_bounds"]
     center_lat = (folium_bounds[0][0] + folium_bounds[1][0]) / 2
     center_lon = (folium_bounds[0][1] + folium_bounds[1][1]) / 2
 
     m = folium.Map(location=[center_lat, center_lon], tiles="OpenStreetMap", zoom_control=True)
+
     raster_layers.ImageOverlay(
         image=rgba,
         bounds=folium_bounds,
@@ -717,25 +734,26 @@ else:
         interactive=True,
         zindex=1
     ).add_to(m)
+
     m.fit_bounds(folium_bounds)
 
     legend_html = f"""
     <div style="
-        position: fixed; bottom: 30px; left: 30px; width: 450px; z-index: 9999;
+        position: fixed; bottom: 30px; left: 30px; width: 520px; z-index: 9999;
         background-color: white; padding: 10px; border: 1px solid #999; border-radius: 6px;
         font-size: 12px;">
         <b>{map_title}</b><br/>
         escala fixa: [{vmin_fixed:.2f}, {vmax_fixed:.2f}] {unit}<br/>
-        filtro: NDVI ≤ {NDVI_MACROFITAS_THR:.2f} (remove macrófitas)<br/>
-        pixels zerados: ocultos<br/>
-        colormap: {cmap_name} • gamma: {gamma:.2f}<br/>
-        <span style="color:#666;">(proxy reescalado para faixa física — exemplo)</span>
+        contraste (visual): [{vmin_vis:.2f}, {vmax_vis:.2f}] {unit} {'(p2–p98 dentro da escala fixa)' if use_internal_stretch else '(igual à escala fixa)'}<br/>
+        filtro: NDVI ≤ {NDVI_MACROFITAS_THR:.2f} (remove macrófitas) • pixels zerados: ocultos<br/>
+        colormap: {cmap_name} • gamma: {gamma:.2f}
     </div>
     """
     m.get_root().html.add_child(folium.Element(legend_html))
 
     click = st_folium(m, width=1200, height=700)
 
+    # Colorbar sempre na escala fixa (científica)
     cb_img = make_colorbar_image(vmin=vmin_fixed, vmax=vmax_fixed, cmap_name=cmap_name, label=label_unit)
     st.image(cb_img, use_column_width=False)
 
@@ -796,7 +814,7 @@ else:
     st.markdown("---")
 
     # ----------------------------
-    # NDVI e NDWI ao final (diagnóstico)
+    # Diagnóstico NDVI/NDWI (data selecionada)
     # ----------------------------
     st.markdown("### 🧪 Diagnóstico (NDVI e NDWI) — data selecionada")
     with st.expander("Ver NDVI e NDWI (mapas)"):
@@ -814,6 +832,8 @@ else:
         "Qualidade da Água • filtro: NDVI ≤ 0.5 (remove macrófitas). "
         "Pixels zerados ocultos. NDWI exibido apenas para diagnóstico."
     )
+
+
 
 
 
