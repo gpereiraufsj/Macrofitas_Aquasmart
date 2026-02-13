@@ -510,15 +510,18 @@ else:
     # NDVI / NDWI Diagnóstico
     # ===============================
     st.markdown("### 🧪 NDVI / NDWI (diagnóstico)")
-    colA, colB = st.columns(2)
-    with colA:
-        ndvi_u8, ndvi_min, ndvi_max = normalize_to_uint8(ndvi_A)
-        st.caption(f"NDVI [{ndvi_min:.2f} – {ndvi_max:.2f}]")
-        st.image(colormap_rgba(ndvi_u8, "viridis"), use_column_width=True)
-    with colB:
-        ndwi_u8, ndwi_min, ndwi_max = normalize_to_uint8(ndwi_A)
-        st.caption(f"NDWI [{ndwi_min:.2f} – {ndwi_max:.2f}]")
-        st.image(colormap_rgba(ndwi_u8, "cividis"), use_column_width=True)
+colA, colB = st.columns(2)
+
+with colA:
+    ndvi_u8, ndvi_min, ndvi_max = normalize_to_uint8_diag(ndvi_A)
+    st.caption(f"NDVI [{ndvi_min:.2f} – {ndvi_max:.2f}]")
+    st.image(colormap_rgba(ndvi_u8, "viridis"), use_column_width=True)
+
+with colB:
+    ndwi_u8, ndwi_min, ndwi_max = normalize_to_uint8_diag(ndwi_A)
+    st.caption(f"NDWI [{ndwi_min:.2f} – {ndwi_max:.2f}]")
+    st.image(colormap_rgba(ndwi_u8, "cividis"), use_column_width=True)
+
 
 
 
