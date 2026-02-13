@@ -115,25 +115,36 @@ def compute_masks(B, G, R, NIR, ndwi_thr: float, ndvi_veg_thr: float):
 
 def compute_water_variable(B, G, R, NIR, var_key: str):
     """
-    Equações genéricas (exemplo). Trocar depois pelos seus algoritmos.
+    Proxy -> reescala para a faixa do indicador (exemplo).
+    Assim o mapa e a série ficam compatíveis com os intervalos fixos.
     """
     if var_key == "chlor_a":
-        # Exemplo: proxy baseado em NIR/R
-        out = (NIR / (R + EPS))
+        proxy = (NIR / (R + EPS))                 # ~0–?
+        vmin, vmax = 15.0, 140.0                  # µg/L
     elif var_key == "phycocyanin":
-        # Exemplo: proxy baseado em R/G
-        out = (R / (G + EPS))
+        proxy = (R / (G + EPS))                   # ~0–?
+        vmin, vmax = 2.5, 22.0                    # µg/L
     elif var_key == "turbidity":
-        # Exemplo: proxy baseado em R/(B+G)
-        out = R / (B + G + EPS)
+        proxy = R / (B + G + EPS)                 # ~0–?
+        vmin, vmax = 2.5, 20.0                    # NTU
     elif var_key == "secchi":
-        # Exemplo: inverso da turbidez (proxy)
-        turb = R / (B + G + EPS)
-        out = 1.0 / (turb + EPS)
+        proxy = 1.0 / (R / (B + G + EPS) + EPS)   # inverso turb (proxy)
+        vmin, vmax = 20.0, 100.0                  # cm
     else:
         raise ValueError("Variável desconhecida.")
-    return out
 
+    # Normaliza o proxy para 0–1 usando percentis (robusto)
+    p2 = np.nanpercentile(proxy, 2)
+    p98 = np.nanpercentile(proxy, 98)
+    if not np.isfinite(p2) or not np.isfinite(p98) or p98 <= p2:
+        return np.full_like(proxy, np.nan, dtype="float32")
+
+    proxy01 = (proxy - p2) / (p98 - p2 + EPS)
+    proxy01 = np.clip(proxy01, 0, 1)
+
+    # Reescala para a faixa “física”
+    out = vmin + proxy01 * (vmax - vmin)
+    return out.astype("float32")
 def normalize_to_uint8_diag(a, pmin=2, pmax=98):
     """
     Normaliza um array float para uint8 (0–255) usando percentis (pmin–pmax),
@@ -638,6 +649,7 @@ else:
             st.image(colormap_rgba(ndwi_u8, "cividis"), use_column_width=True)
 
     st.caption("Qualidade da Água • filtro: NDVI ≤ 0.5 (remove macrófitas). Pixels zerados ocultos. NDWI exibido apenas para diagnóstico.")
+
 
 
 
