@@ -154,7 +154,7 @@ def normalize_to_uint8(a, vmin, vmax):
 
     return u, float(vmin), float(vmax)
     
-ddef colormap_rgba(uint8_img, cmap_name="viridis"):
+def colormap_rgba(uint8_img, cmap_name="viridis"):
     cmap = cm.get_cmap(cmap_name)
     x = uint8_img.astype("float32") / 255.0
     rgba = (cmap(x) * 255).astype(np.uint8)
@@ -728,6 +728,7 @@ else:
         "Qualidade da Água • filtro: NDVI ≤ 0.5 (remove macrófitas). "
         "Transparente: NoData/zeros e valores fora da faixa fixa. NDWI exibido apenas para diagnóstico."
     )
+
 
 
 
