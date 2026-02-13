@@ -135,8 +135,14 @@ def compute_water_variable(B, G, R, NIR, var_key: str):
     return out
 
 def normalize_to_uint8_diag(a, pmin=2, pmax=98):
-    a = a.astype("float32")
+    """
+    Normaliza um array float para uint8 (0–255) usando percentis (pmin–pmax),
+    ignorando NaNs/Infs. Útil para mapas diagnósticos (NDVI/NDWI).
+    Retorna: (uint8_img, vmin, vmax)
+    """
+    a = np.asarray(a, dtype="float32")
     valid = np.isfinite(a)
+
     out = np.zeros_like(a, dtype=np.uint8)
     if not np.any(valid):
         return out, 0.0, 1.0
@@ -147,15 +153,22 @@ def normalize_to_uint8_diag(a, pmin=2, pmax=98):
         vmax = vmin + 1e-6
 
     x = (a - vmin) / (vmax - vmin)
-    x = np.clip(x, 0, 1)
+    x = np.clip(x, 0.0, 1.0)
     out[valid] = (x[valid] * 255).astype(np.uint8)
+
     return out, vmin, vmax
-    
+
+
 def colormap_rgba(uint8_img, cmap_name="viridis"):
+    """
+    Aplica um colormap do Matplotlib em uma imagem uint8 (0–255),
+    retornando RGBA uint8 (H, W, 4).
+    """
+    uint8_img = np.asarray(uint8_img, dtype=np.uint8)
     cmap = cm.get_cmap(cmap_name)
+
     x = uint8_img.astype("float32") / 255.0
     rgba = (cmap(x) * 255).astype(np.uint8)
-    rgba[uint8_img == 0, 3] = 0
     return rgba
     
 def sample_from_precomputed_array(src, arr, lon, lat):
@@ -653,6 +666,7 @@ else:
             st.image(colormap_rgba(ndwi_u8, "cividis"), use_column_width=True)
 
     st.caption("Qualidade da Água • filtro: NDVI ≤ 0.5 (remove macrófitas). Pixels zerados ocultos. NDWI exibido apenas para diagnóstico.")
+
 
 
 
