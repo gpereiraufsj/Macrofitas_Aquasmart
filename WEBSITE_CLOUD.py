@@ -363,41 +363,38 @@ if pagina == "🌿 Macrófitas":
     st.caption("Versão científica interativa • Desenvolvido com 💚 para o Projeto AQUASMART")
 
 # =====================================================================
-# PÁGINA 2 — QUALIDADE DA ÁGUA (ROI shapefile + NDVI>0.5 remove macrófitas; NDWI só diagnóstico)
+# PÁGINA 2 — QUALIDADE DA ÁGUA (LAZY: só calcula ao clicar; cache para Cloud)
 # =====================================================================
 else:
     st.subheader("💧 Qualidade da Água")
     st.caption(
-        "Derivado de DATA_*.tif (EPSG:3857) • filtro: remove macrófitas onde NDVI > 0.5 • "
-        "recorte por ROI (F_2024.shp) quando disponível • NDWI exibido apenas para diagnóstico."
+        "DATA_*.tif (EPSG:3857) • remove macrófitas (NDVI > 0.5) • "
+        "ROI (F_2024.shp) opcional • NDWI somente diagnóstico • otimizado (lazy + cache)."
     )
 
-    # ----------------------------
-    # Parâmetros fixos
-    # ----------------------------
-    NDVI_MACROFITAS_THR = 0.50  # remove macrófitas/vegetação aquática
+    NDVI_MACROFITAS_THR = 0.50
 
-    # ROI (shapefile) — se existir, aplica automaticamente
+    # ---------- ROI ----------
     roi_path = base_path / "F_2024.shp"
     use_roi = roi_path.exists()
     roi_geom_4326 = None
+
     if use_roi:
         try:
             _gdf_roi, roi_geom_4326 = load_roi_geometry(roi_path)
-            st.success("ROI ativo: F_2024.shp (pixels fora do polígono serão excluídos).")
+            st.success("ROI ativo: F_2024.shp")
         except Exception as e:
-            st.warning(f"Falha ao carregar ROI (F_2024.shp). Continuando sem recorte. Detalhe: {e}")
+            st.warning(f"Falha ao carregar ROI. Continuando sem recorte. Detalhe: {e}")
             use_roi = False
             roi_geom_4326 = None
     else:
         st.info("ROI não encontrado (F_2024.shp). Para recortar, coloque o shapefile na raiz do repositório.")
 
-    # Arquivos DATA_*.tif
+    # ---------- arquivos ----------
     water_files = list_water_files(base_path)
     if len(water_files) == 0:
         st.warning("Nenhum arquivo encontrado com padrão DATA_*.tif na raiz do repositório.")
         st.stop()
-
     water_dates = [parse_date_from_filename(p) for p in water_files]
 
     var_map = {
@@ -407,161 +404,244 @@ else:
         "Secchi (proxy)": "secchi",
     }
 
-    # ----------------------------
-    # Controles
-    # ----------------------------
+    # ---------- controles ----------
     c1, c2, c3, c4 = st.columns([1.4, 1.4, 1.0, 1.2])
     with c1:
         var_label = st.selectbox("Variável:", list(var_map.keys()), index=0)
     with c2:
-        selected_date = st.selectbox("Data (imagem):", water_dates, index=len(water_dates) - 1)
+        date_a = st.selectbox("Data A:", water_dates, index=len(water_dates) - 1)
     with c3:
         cmap_name = st.selectbox("Colormap:", ["viridis", "cividis", "plasma", "inferno", "magma"], index=0)
     with c4:
         compare_mode = st.checkbox("Comparar duas datas", value=False)
 
     var_key = var_map[var_label]
-    tif_path = base_path / f"DATA_{selected_date}.tif"
-
-    # Se comparar: escolher segunda data + tipo
     date_b = None
-    diff_type = "Diferença (B - A)"
+    diff_type = None
+
     if compare_mode:
-        cc1, cc2 = st.columns([1.4, 1.6])
+        cc1, cc2 = st.columns([1.2, 1.8])
         with cc1:
             date_b = st.selectbox("Data B:", water_dates, index=len(water_dates) - 1)
         with cc2:
             diff_type = st.selectbox("Produto:", ["Diferença (B - A)", "Variação % ((B-A)/A)"], index=0)
 
+    tif_a = base_path / f"DATA_{date_a}.tif"
+    tif_b = base_path / f"DATA_{date_b}.tif" if (compare_mode and date_b) else None
+
+    # ---------- BOTÃO: evita travar na carga ----------
+    run = st.button("🚀 Gerar mapa e estatísticas", type="primary")
+
     # =================================================================
-    # Função local: processar TIFF -> var_filtrada + NDVI/NDWI + meta + ROI mask aplicado
+    # Funções locais (ponto / ROI / downsample / stats em blocos)
     # =================================================================
-    def compute_filtered_var_and_indices(tif_file: pathlib.Path):
-        with rasterio.open(tif_file) as src:
-            if src.count < 4:
-                raise ValueError("DATA_*.tif precisa ter 4 bandas (B, G, R, NIR).")
+    from shapely.geometry import Point
 
-            B = read_band(src, 1)
-            G = read_band(src, 2)
-            R = read_band(src, 3)
-            NIR = read_band(src, 4)
+    def point_in_roi_epsg4326(lon, lat):
+        if not use_roi or roi_geom_4326 is None:
+            return True
+        return roi_geom_4326.contains(Point(lon, lat))
 
-            ndvi = compute_ndvi(B, G, R, NIR)
-            ndwi = compute_ndwi(G, NIR)
+    def read_pixel_4bands(src, lon, lat):
+        transformer = get_transformer_to_raster(src.crs)
+        if transformer:
+            x, y = transformer.transform(lon, lat)
+        else:
+            x, y = lon, lat
+        r, c = rowcol(src.transform, x, y)
+        if r < 0 or c < 0 or r >= src.height or c >= src.width:
+            return None
+        w = rasterio.windows.Window(col_off=c, row_off=r, width=1, height=1)
+        pix = src.read([1, 2, 3, 4], window=w).astype("float32").reshape(4)
+        if src.nodata is not None and np.any(pix == src.nodata):
+            return None
+        return pix  # [B,G,R,NIR]
 
-            # filtro NDVI: manter pixels NÃO-macrófitas
-            valid_mask = np.isfinite(ndvi) & (ndvi <= NDVI_MACROFITAS_THR)
+    def compute_var_from_pixel(pix, var_key):
+        B, G, R, NIR = pix
+        ndvi = (NIR - R) / (NIR + R + EPS)
+        ndwi = (G - NIR) / (G + NIR + EPS)
+        if (not np.isfinite(ndvi)) or (ndvi > NDVI_MACROFITAS_THR):
+            return np.nan, float(ndvi) if np.isfinite(ndvi) else np.nan, float(ndwi) if np.isfinite(ndwi) else np.nan
 
-            # aplicar ROI (excluir pixels fora do polígono)
-            if use_roi and roi_geom_4326 is not None:
-                roi_inside = roi_mask_for_raster(src, roi_geom_4326)  # True dentro do ROI
-                valid_mask = valid_mask & roi_inside
+        if var_key == "chlor_a":
+            val = NIR / (R + EPS)
+        elif var_key == "phycocyanin":
+            val = R / (G + EPS)
+        elif var_key == "turbidity":
+            val = R / (B + G + EPS)
+        elif var_key == "secchi":
+            turb = R / (B + G + EPS)
+            val = 1.0 / (turb + EPS)
+        else:
+            val = np.nan
 
-            var_raw = compute_water_variable(B, G, R, NIR, var_key)
-            var_filt = np.where(valid_mask, var_raw, np.nan)
+        return float(val) if np.isfinite(val) else np.nan, float(ndvi), float(ndwi)
 
-            folium_bounds = bounds_3857_to_4326(src.bounds)
-
-            meta = {
-                "crs": src.crs,
-                "transform": src.transform,
-                "bounds": src.bounds,
-                "folium_bounds": folium_bounds,
+    @st.cache_data(show_spinner=False)
+    def get_meta_cached(tif_path_str: str):
+        p = pathlib.Path(tif_path_str)
+        with rasterio.open(p) as src:
+            return {
+                "folium_bounds": bounds_3857_to_4326(src.bounds),
+                "crs": str(src.crs),
                 "shape": (src.height, src.width),
             }
-            return var_filt, ndvi, ndwi, meta
+
+    @st.cache_data(show_spinner=False)
+    def downsample_overlay_cached(tif_path_str: str, var_key: str, cmap_name: str, use_roi_flag: bool, ndvi_thr: float):
+        tif_path = pathlib.Path(tif_path_str)
+        with rasterio.open(tif_path) as src:
+            # downsample para ~1100px
+            max_width = 1100
+            scale = max(1, int(np.ceil(src.width / max_width)))
+            out_w = int(np.ceil(src.width / scale))
+            out_h = int(np.ceil(src.height / scale))
+
+            B = src.read(1, out_shape=(out_h, out_w), resampling=rasterio.enums.Resampling.bilinear).astype("float32")
+            G = src.read(2, out_shape=(out_h, out_w), resampling=rasterio.enums.Resampling.bilinear).astype("float32")
+            R = src.read(3, out_shape=(out_h, out_w), resampling=rasterio.enums.Resampling.bilinear).astype("float32")
+            NIR = src.read(4, out_shape=(out_h, out_w), resampling=rasterio.enums.Resampling.bilinear).astype("float32")
+
+            ndvi = (NIR - R) / (NIR + R + EPS)
+            ndwi = (G - NIR) / (G + NIR + EPS)
+
+            valid = np.isfinite(ndvi) & (ndvi <= ndvi_thr)
+
+            # ROI no downsample (rápido)
+            if use_roi_flag and (roi_geom_4326 is not None):
+                gdf_tmp = gpd.GeoDataFrame(geometry=[roi_geom_4326], crs="EPSG:4326").to_crs(src.crs)
+                geom_r = gdf_tmp.geometry.iloc[0]
+                scale_x = src.width / out_w
+                scale_y = src.height / out_h
+                new_transform = src.transform * src.transform.scale(scale_x, scale_y)
+
+                roi_inside = ~rasterio.features.geometry_mask(
+                    [geom_r],
+                    out_shape=(out_h, out_w),
+                    transform=new_transform,
+                    invert=False,
+                    all_touched=False
+                )
+                valid = valid & roi_inside
+
+            if var_key == "chlor_a":
+                var = NIR / (R + EPS)
+            elif var_key == "phycocyanin":
+                var = R / (G + EPS)
+            elif var_key == "turbidity":
+                var = R / (B + G + EPS)
+            elif var_key == "secchi":
+                turb = R / (B + G + EPS)
+                var = 1.0 / (turb + EPS)
+            else:
+                var = np.full_like(R, np.nan, dtype="float32")
+
+            var = np.where(valid, var, np.nan)
+
+            img_u8, vmin, vmax = normalize_to_uint8(var)
+            rgba = colormap_rgba(img_u8, cmap_name=cmap_name)
+
+            return rgba, float(vmin), float(vmax), ndvi, ndwi
+
+    @st.cache_data(show_spinner=False)
+    def spatial_stats_blockwise_cached(tif_path_str: str, var_key: str, use_roi_flag: bool, ndvi_thr: float):
+        tif_path = pathlib.Path(tif_path_str)
+        sample = []
+        SAMPLE_MAX = 200_000
+
+        with rasterio.open(tif_path) as src:
+            geom_r = None
+            if use_roi_flag and (roi_geom_4326 is not None):
+                gdf_tmp = gpd.GeoDataFrame(geometry=[roi_geom_4326], crs="EPSG:4326").to_crs(src.crs)
+                geom_r = gdf_tmp.geometry.iloc[0]
+
+            for _, window in src.block_windows(1):
+                B = src.read(1, window=window).astype("float32")
+                G = src.read(2, window=window).astype("float32")
+                R = src.read(3, window=window).astype("float32")
+                NIR = src.read(4, window=window).astype("float32")
+
+                ndvi = (NIR - R) / (NIR + R + EPS)
+                valid = np.isfinite(ndvi) & (ndvi <= ndvi_thr)
+
+                if geom_r is not None:
+                    roi_inside = ~rasterio.features.geometry_mask(
+                        [geom_r],
+                        out_shape=(window.height, window.width),
+                        transform=rasterio.windows.transform(window, src.transform),
+                        invert=False,
+                        all_touched=False
+                    )
+                    valid = valid & roi_inside
+
+                if var_key == "chlor_a":
+                    var = NIR / (R + EPS)
+                elif var_key == "phycocyanin":
+                    var = R / (G + EPS)
+                elif var_key == "turbidity":
+                    var = R / (B + G + EPS)
+                elif var_key == "secchi":
+                    turb = R / (B + G + EPS)
+                    var = 1.0 / (turb + EPS)
+                else:
+                    var = np.full_like(R, np.nan, dtype="float32")
+
+                vals = var[valid]
+                if vals.size:
+                    if len(sample) < SAMPLE_MAX:
+                        take = vals
+                        if take.size + len(sample) > SAMPLE_MAX:
+                            take = np.random.choice(vals, SAMPLE_MAX - len(sample), replace=False)
+                        sample.extend(take.astype("float32").tolist())
+
+        if len(sample) == 0:
+            return None
+
+        arr = np.array(sample, dtype="float32")
+        return {
+            "n_amostra": int(arr.size),
+            "média": float(np.nanmean(arr)),
+            "mediana": float(np.nanmedian(arr)),
+            "p10": float(np.nanpercentile(arr, 10)),
+            "p25": float(np.nanpercentile(arr, 25)),
+            "p75": float(np.nanpercentile(arr, 75)),
+            "p90": float(np.nanpercentile(arr, 90)),
+            "mín": float(np.nanmin(arr)),
+            "máx": float(np.nanmax(arr)),
+        }
 
     # =================================================================
-    # Ler A (e B se necessário)
+    # Só executa pesado se clicar
     # =================================================================
-    try:
-        var_A, ndvi_A, ndwi_A, meta_A = compute_filtered_var_and_indices(tif_path)
-    except Exception as e:
-        st.error(f"Erro ao processar {tif_path.name}: {e}")
+    if not run:
+        st.info("Clique em **Gerar mapa e estatísticas** para processar (evita travar na inicialização).")
         st.stop()
 
-    map_arr = var_A
-    map_title = f"{var_label} • {selected_date}"
+    with st.spinner("Processando... (mapa downsample + estatística em blocos)"):
+        rgba_a, vmin, vmax, ndvi_ds, ndwi_ds = downsample_overlay_cached(
+            str(tif_a), var_key, cmap_name, use_roi, NDVI_MACROFITAS_THR
+        )
+        stats_a = spatial_stats_blockwise_cached(str(tif_a), var_key, use_roi, NDVI_MACROFITAS_THR)
 
-    if compare_mode and date_b:
-        tif_path_B = base_path / f"DATA_{date_b}.tif"
-        try:
-            var_B, ndvi_B, ndwi_B, meta_B = compute_filtered_var_and_indices(tif_path_B)
-        except Exception as e:
-            st.error(f"Erro ao processar DATA_{date_b}.tif: {e}")
-            st.stop()
-
-        # Comparação requer mesma grade
-        if var_B.shape != var_A.shape:
-            st.error("As imagens A e B têm shapes diferentes. Para comparar, precisam estar na mesma grade.")
-            st.stop()
-
-        if diff_type == "Diferença (B - A)":
-            map_arr = var_B - var_A
-            map_title = f"{var_label} • Diferença: {date_b} - {selected_date}"
-        else:
-            map_arr = (var_B - var_A) / (var_A + EPS) * 100.0
-            map_title = f"{var_label} • Variação %: {date_b} vs {selected_date}"
+        meta = get_meta_cached(str(tif_a))
+        folium_bounds = meta["folium_bounds"]
 
     # =================================================================
-    # Estatística espacial (somente pixels válidos após filtro NDVI e ROI)
+    # MAPA
     # =================================================================
-    vals = map_arr[np.isfinite(map_arr)]
-    if vals.size == 0:
-        st.warning("Após filtro NDVI (e ROI, se ativo), não sobraram pixels válidos para mapear.")
-        st.stop()
-
-    stats = {
-        "n_pixels": int(vals.size),
-        "média": float(np.nanmean(vals)),
-        "mediana": float(np.nanmedian(vals)),
-        "p05": float(np.nanpercentile(vals, 5)),
-        "p10": float(np.nanpercentile(vals, 10)),
-        "p25": float(np.nanpercentile(vals, 25)),
-        "p75": float(np.nanpercentile(vals, 75)),
-        "p90": float(np.nanpercentile(vals, 90)),
-        "p95": float(np.nanpercentile(vals, 95)),
-        "mín": float(np.nanmin(vals)),
-        "máx": float(np.nanmax(vals)),
-    }
-
-    st.markdown("### 📊 Estatística espacial (pixels válidos após filtro NDVI + ROI)")
-    s1, s2, s3, s4, s5 = st.columns(5)
-    s1.metric("N pixels válidos", f"{stats['n_pixels']:,}")
-    s2.metric("Média", f"{stats['média']:.3f}")
-    s3.metric("Mediana", f"{stats['mediana']:.3f}")
-    s4.metric("p10–p90", f"{stats['p10']:.3f} – {stats['p90']:.3f}")
-    s5.metric("Mín–Máx", f"{stats['mín']:.3f} – {stats['máx']:.3f}")
-
-    with st.expander("Ver percentis detalhados"):
-        st.write({
-            "p05": stats["p05"], "p10": stats["p10"], "p25": stats["p25"],
-            "p75": stats["p75"], "p90": stats["p90"], "p95": stats["p95"]
-        })
-
-    # =================================================================
-    # Mapa grande + escala (colorbar real)
-    # =================================================================
-    st.markdown("### 🗺️ Mapa interativo (zoom pela extensão do GeoTIFF)")
-
-    img_u8, vmin, vmax = normalize_to_uint8(map_arr)
-    rgba = colormap_rgba(img_u8, cmap_name=cmap_name)
-
-    folium_bounds = meta_A["folium_bounds"]
+    st.markdown("### 🗺️ Mapa interativo (rápido)")
     center_lat = (folium_bounds[0][0] + folium_bounds[1][0]) / 2
     center_lon = (folium_bounds[0][1] + folium_bounds[1][1]) / 2
 
     m = folium.Map(location=[center_lat, center_lon], tiles="OpenStreetMap", zoom_control=True)
-
     raster_layers.ImageOverlay(
-        image=rgba,
+        image=rgba_a,
         bounds=folium_bounds,
         opacity=0.85,
         interactive=True,
         zindex=1
     ).add_to(m)
-
-    # Fit bounds real usando os valores do raster
     m.fit_bounds(folium_bounds)
 
     legend_html = f"""
@@ -569,92 +649,122 @@ else:
         position: fixed; bottom: 30px; left: 30px; width: 360px; z-index: 9999;
         background-color: white; padding: 10px; border: 1px solid #999; border-radius: 6px;
         font-size: 12px;">
-        <b>{map_title}</b><br/>
-        escala (min–max exibição): [{vmin:.3f}, {vmax:.3f}]<br/>
+        <b>{var_label} • {date_a}</b><br/>
+        escala: [{vmin:.3f}, {vmax:.3f}]<br/>
         filtro: NDVI ≤ {NDVI_MACROFITAS_THR:.2f} (remove macrófitas)<br/>
-        ROI: {"ATIVO (F_2024.shp)" if use_roi else "inativo"}<br/>
-        colormap: {cmap_name}<br/>
-        <span style="color:#666;">(equações genéricas)</span>
+        ROI: {"ATIVO" if use_roi else "inativo"}<br/>
+        colormap: {cmap_name}
     </div>
     """
     m.get_root().html.add_child(folium.Element(legend_html))
 
     click = st_folium(m, width=1200, height=720)
 
-    # Colorbar real
     cb_img = make_colorbar_image(vmin=vmin, vmax=vmax, cmap_name=cmap_name, label=var_label)
     st.image(cb_img, use_column_width=False)
+
+    # =================================================================
+    # ESTATÍSTICA
+    # =================================================================
+    st.markdown("### 📊 Estatística espacial (amostrada, após filtro NDVI + ROI)")
+    if stats_a is None:
+        st.warning("Sem pixels válidos após filtro/ROI.")
+    else:
+        s1, s2, s3, s4, s5 = st.columns(5)
+        s1.metric("N amostra", f"{stats_a['n_amostra']:,}")
+        s2.metric("Média", f"{stats_a['média']:.3f}")
+        s3.metric("Mediana", f"{stats_a['mediana']:.3f}")
+        s4.metric("p10–p90", f"{stats_a['p10']:.3f} – {stats_a['p90']:.3f}")
+        s5.metric("Mín–Máx", f"{stats_a['mín']:.3f} – {stats_a['máx']:.3f}")
 
     st.markdown("---")
 
     # =================================================================
-    # Série temporal no ponto + curva sazonal (climatologia mensal)
+    # SÉRIE TEMPORAL + CURVA SAZONAL
     # =================================================================
-    st.markdown("### 📈 Série temporal no ponto clicado (após filtro NDVI + ROI)")
+    st.markdown("### 📈 Série temporal no ponto (pixel a pixel) + curva sazonal")
     if click and click.get("last_clicked"):
         lon = click["last_clicked"]["lng"]
         lat = click["last_clicked"]["lat"]
-        st.success(f"Coordenada (EPSG:4326): ({lat:.5f}, {lon:.5f})")
 
-        series = []
-        for p in water_files:
-            dt = parse_date_from_filename(p)
-            try:
-                var_f, ndvi_f, ndwi_f, meta_f = compute_filtered_var_and_indices(p)
-                with rasterio.open(p) as src:
-                    val = sample_from_precomputed_array(src, var_f, lon, lat)
-                series.append({"Data": dt, "Valor": val})
-            except:
-                series.append({"Data": dt, "Valor": np.nan})
+        if not point_in_roi_epsg4326(lon, lat):
+            st.warning("O ponto clicado está fora do ROI (F_2024.shp). Selecione um ponto dentro.")
+        else:
+            st.success(f"Coordenada (EPSG:4326): ({lat:.5f}, {lon:.5f})")
 
-        df_ts = pd.DataFrame(series)
-        df_ts["Data"] = pd.to_datetime(df_ts["Data"])
-        df_ts = df_ts.sort_values("Data")
+            series = []
+            for p in water_files:
+                dt = parse_date_from_filename(p)
+                try:
+                    with rasterio.open(p) as src:
+                        pix = read_pixel_4bands(src, lon, lat)
+                        if pix is None:
+                            series.append({"Data": dt, "Valor": np.nan, "NDVI": np.nan, "NDWI": np.nan})
+                            continue
+                        val, ndvi_p, ndwi_p = compute_var_from_pixel(pix, var_key)
+                        series.append({"Data": dt, "Valor": val, "NDVI": ndvi_p, "NDWI": ndwi_p})
+                except:
+                    series.append({"Data": dt, "Valor": np.nan, "NDVI": np.nan, "NDWI": np.nan})
 
-        fig_ts = px.line(
-            df_ts, x="Data", y="Valor", markers=True,
-            title=f"Série temporal — {var_label} (NDVI ≤ {NDVI_MACROFITAS_THR} + ROI)",
-            labels={"Valor": var_label}
-        )
-        st.plotly_chart(fig_ts, use_container_width=True)
+            df_ts = pd.DataFrame(series)
+            df_ts["Data"] = pd.to_datetime(df_ts["Data"])
+            df_ts = df_ts.sort_values("Data")
 
-        # Curva sazonal (climatologia mensal no ponto)
-        st.markdown("### 📆 Curva sazonal (média por mês no ponto)")
-        df_ts["Mês"] = df_ts["Data"].dt.month
-        clim = df_ts.groupby("Mês")["Valor"].mean(numeric_only=True).reset_index()
+            fig_ts = px.line(
+                df_ts, x="Data", y="Valor", markers=True,
+                title=f"Série temporal — {var_label} (NDVI ≤ {NDVI_MACROFITAS_THR})",
+                labels={"Valor": var_label}
+            )
+            st.plotly_chart(fig_ts, use_container_width=True)
 
-        fig_clim = px.line(
-            clim, x="Mês", y="Valor", markers=True,
-            title=f"Climatologia mensal no ponto — {var_label}",
-            labels={"Valor": var_label}
-        )
-        fig_clim.update_layout(xaxis=dict(dtick=1))
-        st.plotly_chart(fig_clim, use_container_width=True)
+            if compare_mode and date_b is not None:
+                vA = df_ts.loc[df_ts["Data"] == pd.to_datetime(date_a), "Valor"]
+                vB = df_ts.loc[df_ts["Data"] == pd.to_datetime(date_b), "Valor"]
+                if len(vA) and len(vB):
+                    vA = float(vA.values[0]) if np.isfinite(vA.values[0]) else np.nan
+                    vB = float(vB.values[0]) if np.isfinite(vB.values[0]) else np.nan
+                    if np.isfinite(vA) and np.isfinite(vB):
+                        diff = vB - vA
+                        varp = (diff / (vA + EPS)) * 100.0
+                        cc1, cc2, cc3 = st.columns(3)
+                        cc1.metric("Valor A", f"{vA:.4f}", date_a)
+                        cc2.metric("Valor B", f"{vB:.4f}", date_b)
+                        cc3.metric("Δ / %", f"{diff:.4f} / {varp:.2f}%")
 
-        with st.expander("Tabela (série no ponto)"):
-            st.dataframe(df_ts, use_container_width=True)
+            st.markdown("### 📆 Curva sazonal (média por mês no ponto)")
+            df_ts["Mês"] = df_ts["Data"].dt.month
+            clim = df_ts.groupby("Mês")["Valor"].mean(numeric_only=True).reset_index()
+            fig_clim = px.line(
+                clim, x="Mês", y="Valor", markers=True,
+                title=f"Climatologia mensal no ponto — {var_label}",
+                labels={"Valor": var_label}
+            )
+            fig_clim.update_layout(xaxis=dict(dtick=1))
+            st.plotly_chart(fig_clim, use_container_width=True)
+
+            with st.expander("Tabela (série no ponto)"):
+                st.dataframe(df_ts, use_container_width=True)
     else:
         st.info("Clique em um ponto no mapa para extrair a série temporal e a curva sazonal.")
 
     st.markdown("---")
 
     # =================================================================
-    # NDVI e NDWI ao final (diagnóstico)
+    # NDVI/NDWI no final (diagnóstico)
     # =================================================================
-    st.markdown("### 🧪 Diagnóstico (NDVI e NDWI) — data selecionada")
-
+    st.markdown("### 🧪 Diagnóstico (NDVI e NDWI) — data selecionada (downsample)")
     with st.expander("Ver NDVI e NDWI (mapas)"):
         cA, cB = st.columns(2)
         with cA:
-            ndvi_u8, ndvi_min, ndvi_max = normalize_to_uint8(ndvi_A)
-            st.caption(f"NDVI • escala [{ndvi_min:.3f}, {ndvi_max:.3f}]")
+            ndvi_u8, ndvi_min, ndvi_max = normalize_to_uint8(ndvi_ds)
+            st.caption(f"NDVI (downsample) • escala [{ndvi_min:.3f}, {ndvi_max:.3f}]")
             st.image(colormap_rgba(ndvi_u8, "viridis"), use_column_width=True)
         with cB:
-            ndwi_u8, ndwi_min, ndwi_max = normalize_to_uint8(ndwi_A)
-            st.caption(f"NDWI • escala [{ndwi_min:.3f}, {ndwi_max:.3f}]")
+            ndwi_u8, ndwi_min, ndwi_max = normalize_to_uint8(ndwi_ds)
+            st.caption(f"NDWI (downsample) • escala [{ndwi_min:.3f}, {ndwi_max:.3f}]")
             st.image(colormap_rgba(ndwi_u8, "cividis"), use_column_width=True)
 
-    st.caption("Qualidade da Água • filtro: NDVI ≤ 0.5 (remove macrófitas) + ROI (se disponível). NDWI exibido apenas para diagnóstico.")
+
 
 
 
