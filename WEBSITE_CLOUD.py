@@ -344,39 +344,61 @@ else:
         "secchi":      {"label": "Secchi",      "unit": "cm",   "vmin": 20.0, "vmax": 100.0},
     }
 
-    def robust_scale_to_range(proxy, vmin_out, vmax_out):
-        p2 = np.nanpercentile(proxy, 2)
-        p98 = np.nanpercentile(proxy, 98)
-        if not np.isfinite(p2) or not np.isfinite(p98) or p98 <= p2:
+    def robust_scale_to_range(proxy, vmin_out, vmax_out, scale_mask):
+    """
+    Escala robusta p2–p98 usando APENAS pixels de scale_mask=True.
+    Mantém NaN fora do scale_mask.
+    """
+    proxy = proxy.astype("float32")
+
+    # pixels usados para estimar p2/p98
+    m = np.isfinite(proxy) & scale_mask
+    if not np.any(m):
+        return np.full_like(proxy, np.nan, dtype="float32")
+
+    p2 = float(np.nanpercentile(proxy[m], 2))
+    p98 = float(np.nanpercentile(proxy[m], 98))
+
+    # fallback caso a distribuição esteja “colapsada”
+    if (not np.isfinite(p2)) or (not np.isfinite(p98)) or (p98 <= p2 + 1e-12):
+        p2 = float(np.nanmin(proxy[m]))
+        p98 = float(np.nanmax(proxy[m]))
+        if (not np.isfinite(p2)) or (not np.isfinite(p98)) or (p98 <= p2 + 1e-12):
             return np.full_like(proxy, np.nan, dtype="float32")
-        proxy01 = (proxy - p2) / (p98 - p2 + EPS)
-        proxy01 = np.clip(proxy01, 0, 1)
-        return (vmin_out + proxy01 * (vmax_out - vmin_out)).astype("float32")
 
-    def compute_water_variable_scaled(B, G, R, NIR, var_key: str):
-        spec = VAR_SPECS[var_key]
-        vmin, vmax = float(spec["vmin"]), float(spec["vmax"])
+    proxy01 = (proxy - p2) / (p98 - p2 + EPS)
+    proxy01 = np.clip(proxy01, 0, 1)
 
-        if var_key == "chlor_a":
-            proxy = (NIR / (R + EPS))
-            return robust_scale_to_range(proxy, vmin, vmax)
+    out = (vmin_out + proxy01 * (vmax_out - vmin_out)).astype("float32")
+    out[~scale_mask] = np.nan  # garante NaN fora da máscara
+    return out
 
-        if var_key == "phycocyanin":
-            proxy = (R / (G + EPS))
-            return robust_scale_to_range(proxy, vmin, vmax)
+   def compute_water_variable_scaled(B, G, R, NIR, var_key: str, valid_mask):
+    spec = VAR_SPECS[var_key]
+    vmin, vmax = float(spec["vmin"]), float(spec["vmax"])
 
-        if var_key == "turbidity":
-            proxy = R / (B + G + EPS)
-            return robust_scale_to_range(proxy, vmin, vmax)
+    if var_key == "chlor_a":
+        proxy = (NIR / (R + EPS))
+        return robust_scale_to_range(proxy, vmin, vmax, valid_mask)
 
-        if var_key == "secchi":
-            proxy_turb = R / (B + G + EPS)
-            turb_nt = robust_scale_to_range(proxy_turb, 2.5, 20.0)  # NTU
-            sec01 = (turb_nt - 2.5) / (20.0 - 2.5 + EPS)
-            out = 100.0 - np.clip(sec01, 0, 1) * (100.0 - 20.0)
-            return np.clip(out, vmin, vmax).astype("float32")
+    if var_key == "phycocyanin":
+        proxy = (R / (G + EPS))
+        return robust_scale_to_range(proxy, vmin, vmax, valid_mask)
 
-        raise ValueError("Variável desconhecida.")
+    if var_key == "turbidity":
+        proxy = R / (B + G + EPS)
+        return robust_scale_to_range(proxy, vmin, vmax, valid_mask)
+
+    if var_key == "secchi":
+        proxy_turb = R / (B + G + EPS)
+        turb_nt = robust_scale_to_range(proxy_turb, 2.5, 20.0, valid_mask)  # NTU
+        sec01 = (turb_nt - 2.5) / (20.0 - 2.5 + EPS)
+        out = 100.0 - np.clip(sec01, 0, 1) * (100.0 - 20.0)
+        out = np.clip(out, vmin, vmax).astype("float32")
+        out[~valid_mask] = np.nan
+        return out
+
+    raise ValueError("Variável desconhecida.")
 
     def compute_filtered_var_and_indices(tif_file: pathlib.Path, var_key: str):
         with rasterio.open(tif_file) as src:
@@ -394,9 +416,8 @@ else:
             zero_mask = (B == 0) & (G == 0) & (R == 0) & (NIR == 0)
             valid_mask = np.isfinite(ndvi) & (ndvi <= NDVI_MACROFITAS_THR) & (~zero_mask)
 
-            var_scaled = compute_water_variable_scaled(B, G, R, NIR, var_key)
-            var_filt = np.where(valid_mask, var_scaled, np.nan)
-
+            var_scaled = compute_water_variable_scaled(B, G, R, NIR, var_key, valid_mask)
+            var_filt = var_scaled  # já vem com NaN fora do valid_mask
             meta = {
                 "crs": src.crs,
                 "transform": src.transform,
@@ -640,3 +661,4 @@ else:
         "Qualidade da Água • filtro: NDVI ≤ 0.5 (remove macrófitas). "
         "Pixels zerados ocultos. NDWI exibido apenas para diagnóstico."
     )
+
