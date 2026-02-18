@@ -112,15 +112,17 @@ def normalize_to_uint8_diag(a, vmin=None, vmax=None):
         return np.zeros_like(a, dtype=np.uint8), 0.0, 1.0
 
     if vmin is None:
-        vmin = float(np.nanpercentile(a, 2))
+        vmin = float(np.nanpercentile(a[valid], 2))
     if vmax is None:
-        vmax = float(np.nanpercentile(a, 98))
+        vmax = float(np.nanpercentile(a[valid], 98))
     if vmax <= vmin:
         vmax = vmin + 1e-6
 
     x = (a - vmin) / (vmax - vmin)
     x = np.clip(x, 0, 1)
-    return (x * 255).astype(np.uint8), vmin, vmax
+    out = np.zeros_like(a, dtype=np.uint8)
+    out[valid] = (x[valid] * 255).astype(np.uint8)
+    return out, vmin, vmax
 
 
 def colormap_rgba(uint8_img, cmap_name="viridis"):
@@ -324,7 +326,6 @@ if pagina == "🌿 Macrófitas":
     st.markdown("---")
     st.caption("Versão científica interativa • Desenvolvido com 💚 para o Projeto AQUASMART")
 
-
 # =====================================================================
 # PÁGINA 2 — QUALIDADE DA ÁGUA
 # =====================================================================
@@ -345,13 +346,32 @@ else:
     }
 
     def robust_scale_to_range(proxy, vmin_out, vmax_out):
-        p2 = np.nanpercentile(proxy, 2)
-        p98 = np.nanpercentile(proxy, 98)
-        if not np.isfinite(p2) or not np.isfinite(p98) or p98 <= p2:
+        """
+        Reescala proxy para [vmin_out, vmax_out] via percentis 2–98,
+        usando APENAS valores finitos (evita inf/NaN detonarem o mapa médio).
+        """
+        proxy = np.asarray(proxy, dtype="float32")
+        valid = np.isfinite(proxy)
+
+        if not np.any(valid):
             return np.full_like(proxy, np.nan, dtype="float32")
+
+        pv = proxy[valid]
+        p2 = float(np.nanpercentile(pv, 2))
+        p98 = float(np.nanpercentile(pv, 98))
+
+        if (not np.isfinite(p2)) or (not np.isfinite(p98)) or (p98 <= p2):
+            mid = (vmin_out + vmax_out) / 2.0
+            out = np.full_like(proxy, np.nan, dtype="float32")
+            out[valid] = mid
+            return out
+
         proxy01 = (proxy - p2) / (p98 - p2 + EPS)
         proxy01 = np.clip(proxy01, 0, 1)
-        return (vmin_out + proxy01 * (vmax_out - vmin_out)).astype("float32")
+
+        out = vmin_out + proxy01 * (vmax_out - vmin_out)
+        out[~valid] = np.nan
+        return out.astype("float32")
 
     def compute_water_variable_scaled(B, G, R, NIR, var_key: str):
         spec = VAR_SPECS[var_key]
@@ -391,7 +411,10 @@ else:
             ndvi = compute_ndvi(R, NIR)
             ndwi = compute_ndwi(G, NIR)
 
+            # máscara de pixels zerados (sem dado)
             zero_mask = (B == 0) & (G == 0) & (R == 0) & (NIR == 0)
+
+            # manter: NDVI <= thr e não-zero
             valid_mask = np.isfinite(ndvi) & (ndvi <= NDVI_MACROFITAS_THR) & (~zero_mask)
 
             var_scaled = compute_water_variable_scaled(B, G, R, NIR, var_key)
@@ -450,6 +473,12 @@ else:
 
     @st.cache_data(show_spinner=True)
     def compute_mean_raster(_var_key: str, _vmin: float, _vmax: float):
+        """
+        Média pixel-a-pixel robusta:
+        - só inicializa arrays quando encontrar a PRIMEIRA cena com pixels válidos
+        - ignora cenas sem pixels válidos (evita "sum/cnt" zerados)
+        - ignora shapes diferentes (ou teria que reamostrar)
+        """
         sum_arr = None
         cnt_arr = None
         meta_ref = None
@@ -464,6 +493,11 @@ else:
             )
             valid = np.isfinite(var_f)
 
+            # se cena vazia, pula
+            if not np.any(valid):
+                continue
+
+            # inicializa com a primeira cena realmente válida
             if sum_arr is None:
                 sum_arr = np.zeros_like(var_f, dtype=np.float64)
                 cnt_arr = np.zeros_like(var_f, dtype=np.uint32)
@@ -475,13 +509,20 @@ else:
             sum_arr[valid] += var_f[valid].astype(np.float64)
             cnt_arr[valid] += 1
 
+        if sum_arr is None:
+            return None, None, None
+
         mean_arr = np.full_like(sum_arr, np.nan, dtype=np.float32)
         ok = cnt_arr > 0
         mean_arr[ok] = (sum_arr[ok] / cnt_arr[ok]).astype(np.float32)
+
         return mean_arr, meta_ref, cnt_arr
 
     if use_mean_map:
         map_arr, meta_use, _ = compute_mean_raster(var_key, vmin_fixed, vmax_fixed)
+        if map_arr is None:
+            st.warning("Mapa médio: nenhuma data teve pixels válidos para esta variável (após filtro NDVI + zeros).")
+            st.stop()
         map_title = f"{label_unit} • MÉDIA (todas as datas)"
     else:
         map_arr = var_A
