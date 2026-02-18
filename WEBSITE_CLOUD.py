@@ -385,7 +385,6 @@ def compute_water_variable_scaled(B, G, R, NIR, var_key: str):
     NIR = np.asarray(NIR, dtype="float32")
 
     if var_key == "chlor_a":
-        # evita divisão ruim
         denom = np.maximum(R, EPS)
         proxy = NIR / denom
         return robust_scale_to_range(proxy, vmin, vmax)
@@ -401,12 +400,10 @@ def compute_water_variable_scaled(B, G, R, NIR, var_key: str):
         return robust_scale_to_range(proxy, vmin, vmax)
 
     elif var_key == "secchi":
-        # Secchi derivado da turbidez (estável)
         denom = np.maximum(B + G, EPS)
         proxy_turb = R / denom
 
         turb_nt = robust_scale_to_range(proxy_turb, 2.5, 20.0)  # NTU
-        # se turb_nt vier todo NaN, devolve NaN
         if not np.any(np.isfinite(turb_nt)):
             return np.full_like(turb_nt, np.nan, dtype="float32")
 
@@ -679,4 +676,5 @@ def compute_water_variable_scaled(B, G, R, NIR, var_key: str):
         "Qualidade da Água • filtro: NDVI ≤ 0.5 (remove macrófitas). "
         "Pixels zerados ocultos. NDWI exibido apenas para diagnóstico."
     )
+
 
