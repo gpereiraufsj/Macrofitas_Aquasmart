@@ -457,10 +457,18 @@ else:
     }
 
     c1, c2, c3, c4, c5 = st.columns([1.4, 1.5, 1.0, 1.3, 1.2])
+    DEFAULT_VAR_LABEL = "Clorofila-a"
+    DEFAULT_DATE = "2025-06-01"
+
+    var_keys = list(var_map.keys())
+    default_var_index = var_keys.index(DEFAULT_VAR_LABEL) if DEFAULT_VAR_LABEL in var_keys else 0
+
+    default_date_index = water_dates.index(DEFAULT_DATE) if DEFAULT_DATE in water_dates else (len(water_dates) - 1)
+
     with c1:
-        var_label = st.selectbox("Variável:", list(var_map.keys()), index=0)
+        var_label = st.selectbox("Variável:", var_keys, index=default_var_index)
     with c2:
-        selected_date = st.selectbox("Data (imagem):", water_dates, index=len(water_dates) - 1)
+        selected_date = st.selectbox("Data (imagem):", water_dates, index=default_date_index)
     with c3:
         cmap_name = st.selectbox("Colormap:", ["viridis", "cividis", "plasma", "inferno", "magma"], index=0)
     with c4:
@@ -618,63 +626,67 @@ else:
 
     cb_img = make_colorbar_image(vmin=vmin_fixed, vmax=vmax_fixed, cmap_name=cmap_name, label=label_unit)
     st.image(cb_img, use_column_width=False)
-
+    DEFAULT_LAT = -20.02610
+    DEFAULT_LON = -44.10684
     st.markdown("---")
     st.markdown("### 📈 Série temporal no ponto clicado")
 
+    # se o usuário clicar, usa o clique; senão usa o ponto padrão
     if click and click.get("last_clicked"):
         lon = click["last_clicked"]["lng"]
         lat = click["last_clicked"]["lat"]
-        st.success(f"Coordenada (EPSG:4326): ({lat:.5f}, {lon:.5f})")
+    else:
+        lon = DEFAULT_LON
+        lat = DEFAULT_LAT
 
-        series = []
-        for p in water_files:
-            dt_str = parse_date_from_filename(p)
-            try:
-                var_f, _, _, _ = compute_filtered_var_and_indices(p, var_key)
-                with rasterio.open(p) as src:
-                    val = sample_from_array(src, var_f, lon, lat)
-                series.append({"Data": dt_str, "Valor": val})
-            except Exception:
-                series.append({"Data": dt_str, "Valor": np.nan})
+    st.success(f"Coordenada (EPSG:4326): ({lat:.5f}, {lon:.5f})")
 
-        df_ts = pd.DataFrame(series)
-        df_ts["Data"] = pd.to_datetime(df_ts["Data"])
-        df_ts = df_ts.sort_values("Data")
+    series = []
+    for p in water_files:
+        dt_str = parse_date_from_filename(p)
+        try:
+            var_f, _, _, _ = compute_filtered_var_and_indices(p, var_key)
+            with rasterio.open(p) as src:
+                val = sample_from_array(src, var_f, lon, lat)
+            series.append({"Data": dt_str, "Valor": val})
+        except Exception:
+            series.append({"Data": dt_str, "Valor": np.nan})
 
-        fig_ts = px.line(
-            df_ts,
-            x="Data",
+    df_ts = pd.DataFrame(series)
+    df_ts["Data"] = pd.to_datetime(df_ts["Data"])
+    df_ts = df_ts.sort_values("Data")
+
+    fig_ts = px.line(
+        df_ts,
+        x="Data",
+        y="Valor",
+        markers=True,
+        title=f"Série temporal — {label_unit}",
+        labels={"Valor": label_unit}
+    )
+    fig_ts.update_yaxes(range=[vmin_fixed, vmax_fixed])
+    st.plotly_chart(fig_ts, use_container_width=True)
+
+    if show_point_clim:
+        st.markdown("### 📆 Climatologia mensal do ponto (média por mês)")
+        df_ts["Mes"] = df_ts["Data"].dt.month
+        clim_pt = df_ts.groupby("Mes")["Valor"].mean().reset_index()
+
+        fig_clim = px.line(
+            clim_pt,
+            x="Mes",
             y="Valor",
             markers=True,
-            title=f"Série temporal — {label_unit}",
-            labels={"Valor": label_unit}
+            title=f"Climatologia mensal no ponto — {label_unit}",
+            labels={"Valor": label_unit, "Mes": "Mês"}
         )
-        fig_ts.update_yaxes(range=[vmin_fixed, vmax_fixed])
-        st.plotly_chart(fig_ts, use_container_width=True)
+        fig_clim.update_layout(xaxis=dict(dtick=1))
+        fig_clim.update_yaxes(range=[vmin_fixed, vmax_fixed])
+        st.plotly_chart(fig_clim, use_container_width=True)
 
-        if show_point_clim:
-            st.markdown("### 📆 Climatologia mensal do ponto (média por mês)")
-            df_ts["Mes"] = df_ts["Data"].dt.month
-            clim_pt = df_ts.groupby("Mes")["Valor"].mean().reset_index()
-
-            fig_clim = px.line(
-                clim_pt,
-                x="Mes",
-                y="Valor",
-                markers=True,
-                title=f"Climatologia mensal no ponto — {label_unit}",
-                labels={"Valor": label_unit, "Mes": "Mês"}
-            )
-            fig_clim.update_layout(xaxis=dict(dtick=1))
-            fig_clim.update_yaxes(range=[vmin_fixed, vmax_fixed])
-            st.plotly_chart(fig_clim, use_container_width=True)
-
-        with st.expander("Tabela (série no ponto)"):
-            st.dataframe(df_ts, use_container_width=True)
-
-    else:
-        st.info("Clique em um ponto no mapa para extrair a série temporal e a climatologia mensal do ponto.")
+    with st.expander("Tabela (série no ponto)"):
+        st.dataframe(df_ts, use_container_width=True)
+        
 
     st.markdown("---")
     st.markdown("### 🧪 Diagnóstico (NDVI e NDWI) — data selecionada")
@@ -694,6 +706,7 @@ else:
         "Qualidade da Água • filtro: NDVI ≤ 0.5 (remove macrófitas). "
         "Pixels zerados ocultos. NDWI exibido apenas para diagnóstico."
     )
+
 
 
 
