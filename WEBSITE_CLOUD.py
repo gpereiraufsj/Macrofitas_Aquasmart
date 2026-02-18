@@ -493,7 +493,7 @@ else:
         st.error(f"Erro ao processar {tif_path.name}: {e}")
         st.stop()
 
-    @st.cache_data(show_spinner=True)
+    #@st.cache_data(show_spinner=True)
     def compute_mean_raster(_var_key: str, _vmin: float, _vmax: float):
         sum_arr = None
         cnt_arr = None
@@ -706,6 +706,7 @@ else:
         "Qualidade da Água • filtro: NDVI ≤ 0.5 (remove macrófitas). "
         "Pixels zerados ocultos. NDWI exibido apenas para diagnóstico."
     )
+
 
 
 
