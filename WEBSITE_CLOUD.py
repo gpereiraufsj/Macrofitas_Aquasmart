@@ -344,7 +344,7 @@ else:
         "secchi":      {"label": "Secchi",      "unit": "cm",   "vmin": 20.0, "vmax": 100.0},
     }
 
-    def robust_scale_to_range(proxy, vmin_out, vmax_out, scale_mask):
+     def robust_scale_to_range(proxy, vmin_out, vmax_out, scale_mask):
         """
         Escala robusta p2–p98 usando APENAS pixels de scale_mask=True.
         Mantém NaN fora do scale_mask.
@@ -373,22 +373,22 @@ else:
         out[~scale_mask] = np.nan  # garante NaN fora da máscara
         return out
 
-   def compute_water_variable_scaled(B, G, R, NIR, var_key: str, valid_mask):
+    def compute_water_variable_scaled(B, G, R, NIR, var_key: str, valid_mask):
         spec = VAR_SPECS[var_key]
         vmin, vmax = float(spec["vmin"]), float(spec["vmax"])
-    
+
         if var_key == "chlor_a":
             proxy = (NIR / (R + EPS))
             return robust_scale_to_range(proxy, vmin, vmax, valid_mask)
-    
+
         if var_key == "phycocyanin":
             proxy = (R / (G + EPS))
             return robust_scale_to_range(proxy, vmin, vmax, valid_mask)
-    
+
         if var_key == "turbidity":
             proxy = R / (B + G + EPS)
             return robust_scale_to_range(proxy, vmin, vmax, valid_mask)
-    
+
         if var_key == "secchi":
             proxy_turb = R / (B + G + EPS)
             turb_nt = robust_scale_to_range(proxy_turb, 2.5, 20.0, valid_mask)  # NTU
@@ -397,7 +397,7 @@ else:
             out = np.clip(out, vmin, vmax).astype("float32")
             out[~valid_mask] = np.nan
             return out
-    
+
         raise ValueError("Variável desconhecida.")
 
     def compute_filtered_var_and_indices(tif_file: pathlib.Path, var_key: str):
@@ -661,5 +661,6 @@ else:
         "Qualidade da Água • filtro: NDVI ≤ 0.5 (remove macrófitas). "
         "Pixels zerados ocultos. NDWI exibido apenas para diagnóstico."
     )
+
 
 
