@@ -561,10 +561,31 @@ else:
     valid_draw = np.isfinite(map_arr)
 
     # --- clip só para visualização (mantém legenda fixa)
-    map_clip = np.clip(map_arr, vmin_vis, vmax_vis)
+      # faixa VISUAL baseada nos dados (winsorization), sem “estourar” tudo no vmax
+    vals = map_arr[valid_draw]
+    p2 = float(np.nanpercentile(vals, 2))
+    p98 = float(np.nanpercentile(vals, 98))
+
+    # segurança: garante faixa mínima
+    if (not np.isfinite(p2)) or (not np.isfinite(p98)) or (p98 <= p2 + 1e-12):
+        p2 = float(np.nanmin(vals))
+        p98 = float(np.nanmax(vals))
+
+    # aqui você escolhe: limitar a visualização dentro da escala fixa OU não
+    # Se quiser forçar dentro do fixo:
+    p2 = max(p2, vmin_fixed)
+    p98 = min(p98, vmax_fixed)
+
+    if p98 <= p2 + 1e-12:
+        p2, p98 = vmin_fixed, vmax_fixed
+
+    map_clip = np.clip(map_arr, p2, p98)
+
+    # e usa p2/p98 na normalização (não vmin_vis/vmax_vis)
+    vmin_norm, vmax_norm = p2, p98
 
     norm = np.zeros_like(map_arr, dtype=np.float32)
-    norm[valid_draw] = (map_clip[valid_draw] - vmin_vis) / (vmax_vis - vmin_vis + EPS)
+    norm[valid_draw] = (map_clip[valid_draw] - vmin_norm) / (vmax_norm - vmin_norm + EPS)
     norm[valid_draw] = np.clip(norm[valid_draw], 0, 1)
     norm[valid_draw] = norm[valid_draw] ** float(gamma)
 
@@ -685,6 +706,7 @@ else:
         "Qualidade da Água • filtro: NDVI ≤ 0.5 (remove macrófitas). "
         "Pixels zerados ocultos. NDWI exibido apenas para diagnóstico."
     )
+
 
 
 
