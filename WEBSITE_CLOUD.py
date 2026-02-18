@@ -1,5 +1,5 @@
 # Requisitos:
-# pip install streamlit rasterio numpy pandas plotly folium geopandas streamlit-folium pillow imageio pyproj matplotlib
+# pip install streamlit rasterio numpy pandas plotly folium streamlit-folium pillow pyproj matplotlib
 
 import streamlit as st
 import rasterio
@@ -7,7 +7,6 @@ import folium
 import os
 import numpy as np
 import pandas as pd
-import geopandas as gpd
 from rasterio.transform import rowcol
 from streamlit_folium import st_folium
 import plotly.express as px
@@ -17,10 +16,9 @@ import pathlib
 
 from pyproj import Transformer
 import matplotlib.cm as cm
+import matplotlib.pyplot as plt
+from matplotlib.colors import Normalize
 from io import BytesIO
-
-from shapely.ops import unary_union
-from rasterio.features import geometry_mask
 
 # =====================================================================
 # CONFIGURAÇÃO INICIAL
@@ -57,19 +55,22 @@ with st.sidebar:
 # HEADER
 # =====================================================================
 st.markdown("# AQUASMART • Dashboard Científico")
-st.caption("Macrófitas (ha) • Qualidade da Água (exemplos com máscara água + filtro NDVI)")
+st.caption("Macrófitas (ha) • Qualidade da Água (escala fixa + filtro NDVI)")
 st.markdown("---")
 
 # =====================================================================
-# FUNÇÕES AUXILIARES — QUALIDADE DA ÁGUA
+# FUNÇÕES AUXILIARES (compartilhadas)
 # =====================================================================
 EPS = 1e-6
 
-def list_water_files(folder: pathlib.Path) -> list[pathlib.Path]:
+
+def list_water_files(folder: pathlib.Path):
     return sorted([p for p in folder.glob("DATA_*.tif")])
+
 
 def parse_date_from_filename(p: pathlib.Path) -> str:
     return p.stem.replace("DATA_", "")
+
 
 def bounds_3857_to_4326(bounds):
     """Converte bounds (left,bottom,right,top) de EPSG:3857 -> EPSG:4326 para usar no Folium."""
@@ -77,10 +78,11 @@ def bounds_3857_to_4326(bounds):
     left, bottom, right, top = bounds.left, bounds.bottom, bounds.right, bounds.top
     lon1, lat1 = transformer.transform(left, bottom)
     lon2, lat2 = transformer.transform(right, top)
-    # Folium quer [[southWest],[northEast]]
-    return [[lat1, lon1], [lat2, lon2]]
+    return [[lat1, lon1], [lat2, lon2]]  # [[SW],[NE]]
+
 
 def get_transformer_to_raster(raster_crs):
+    """Transforma lon/lat (EPSG:4326) -> CRS do raster (ex.: EPSG:3857)."""
     if raster_crs is None:
         return None
     epsg = raster_crs.to_epsg() if hasattr(raster_crs, "to_epsg") else None
@@ -88,126 +90,51 @@ def get_transformer_to_raster(raster_crs):
         return None
     return Transformer.from_crs("EPSG:4326", raster_crs, always_xy=True)
 
+
 def read_band(src, idx):
     return src.read(idx).astype("float32")
 
-def compute_ndvi(B, G, R, NIR):
+
+def compute_ndvi(R, NIR):
     return (NIR - R) / (NIR + R + EPS)
 
+
 def compute_ndwi(G, NIR):
-    # NDWI (McFeeters) adaptado: (G - NIR)/(G + NIR)
     return (G - NIR) / (G + NIR + EPS)
 
-def compute_masks(B, G, R, NIR, ndwi_thr: float, ndvi_veg_thr: float):
-    """
-    Água: NDWI > ndwi_thr
-    Vegetação/macrófita: NDVI > ndvi_veg_thr
-    Manter: água E NÃO vegetação
-    """
-    ndvi = compute_ndvi(B, G, R, NIR)
-    ndwi = compute_ndwi(G, NIR)
 
-    water_mask = ndwi > ndwi_thr
-    veg_mask = ndvi > ndvi_veg_thr
-
-    valid_mask = water_mask & (~veg_mask)
-    return valid_mask, ndvi, ndwi
-
-def compute_water_variable(B, G, R, NIR, var_key: str):
-    """
-    Proxy -> reescala para a faixa do indicador (exemplo).
-    Assim o mapa e a série ficam compatíveis com os intervalos fixos.
-    """
-    if var_key == "chlor_a":
-        proxy = (NIR / (R + EPS))                 # ~0–?
-        vmin, vmax = 15.0, 140.0                  # µg/L
-    elif var_key == "phycocyanin":
-        proxy = (R / (G + EPS))                   # ~0–?
-        vmin, vmax = 2.5, 22.0                    # µg/L
-    elif var_key == "turbidity":
-        proxy = R / (B + G + EPS)                 # ~0–?
-        vmin, vmax = 2.5, 20.0                    # NTU
-    elif var_key == "secchi":
-        # Secchi derivado da turbidez (mais estável)
-        proxy_turb = R / (B + G + EPS)
-    
-        # Escala robusta da turbidez para 2.5–20 NTU
-        p2 = np.nanpercentile(proxy_turb, 2)
-        p98 = np.nanpercentile(proxy_turb, 98)
-    
-        if not np.isfinite(p2) or not np.isfinite(p98) or p98 <= p2:
-            return np.full_like(proxy_turb, np.nan, dtype="float32")
-    
-        turb01 = (proxy_turb - p2) / (p98 - p2 + EPS)
-        turb01 = np.clip(turb01, 0, 1)
-    
-        turb_nt = 2.5 + turb01 * (20.0 - 2.5)
-    
-        # Conversão para Secchi: turbidez baixa = alta transparência
-        sec01 = (turb_nt - 2.5) / (20.0 - 2.5 + EPS)
-        out = 100.0 - np.clip(sec01, 0, 1) * (100.0 - 20.0)
-    
-        out = np.clip(out, 20.0, 100.0).astype("float32")
-
-
-
-def normalize_to_uint8_diag(a, pmin=2, pmax=98):
-    """
-    Normaliza um array float para uint8 (0–255) usando percentis (pmin–pmax),
-    ignorando NaNs/Infs. Útil para mapas diagnósticos (NDVI/NDWI).
-    Retorna: (uint8_img, vmin, vmax)
-    """
+def normalize_to_uint8_diag(a, vmin=None, vmax=None):
+    """Para NDVI/NDWI (diagnóstico) — autoescala robusta por percentis."""
     a = np.asarray(a, dtype="float32")
     valid = np.isfinite(a)
 
-    out = np.zeros_like(a, dtype=np.uint8)
     if not np.any(valid):
-        return out, 0.0, 1.0
+        return np.zeros_like(a, dtype=np.uint8), 0.0, 1.0
 
-    vmin = float(np.nanpercentile(a, pmin))
-    vmax = float(np.nanpercentile(a, pmax))
+    if vmin is None:
+        vmin = float(np.nanpercentile(a, 2))
+    if vmax is None:
+        vmax = float(np.nanpercentile(a, 98))
     if vmax <= vmin:
         vmax = vmin + 1e-6
 
     x = (a - vmin) / (vmax - vmin)
-    x = np.clip(x, 0.0, 1.0)
-    out[valid] = (x[valid] * 255).astype(np.uint8)
-
-    return out, vmin, vmax
+    x = np.clip(x, 0, 1)
+    return (x * 255).astype(np.uint8), vmin, vmax
 
 
 def colormap_rgba(uint8_img, cmap_name="viridis"):
-    """
-    Aplica um colormap do Matplotlib em uma imagem uint8 (0–255),
-    retornando RGBA uint8 (H, W, 4).
-    """
+    """Aplica colormap do Matplotlib em uint8 (0–255) e retorna RGBA uint8."""
     uint8_img = np.asarray(uint8_img, dtype=np.uint8)
     cmap = cm.get_cmap(cmap_name)
-
     x = uint8_img.astype("float32") / 255.0
     rgba = (cmap(x) * 255).astype(np.uint8)
     return rgba
-    
-def sample_from_precomputed_array(src, arr, lon, lat):
-    """Amostra valor de 'arr' (mesma grade do raster) no ponto clicado."""
-    transformer = get_transformer_to_raster(src.crs)
-    if transformer:
-        x, y = transformer.transform(lon, lat)
-    else:
-        x, y = lon, lat
 
-    r, c = rowcol(src.transform, x, y)
-    if r < 0 or c < 0 or r >= arr.shape[0] or c >= arr.shape[1]:
-        return np.nan
-    val = arr[r, c]
-    return float(val) if np.isfinite(val) else np.nan
-
-import matplotlib.pyplot as plt
-from matplotlib.colors import Normalize
 
 def make_colorbar_image(vmin: float, vmax: float, cmap_name: str, label: str = "") -> Image.Image:
     """Gera uma colorbar (PNG) como PIL Image para exibir no Streamlit."""
-    fig, ax = plt.subplots(figsize=(5.0, 0.7))
+    fig, ax = plt.subplots(figsize=(5.2, 0.7))
     fig.subplots_adjust(bottom=0.35, left=0.08, right=0.98, top=0.95)
 
     norm = Normalize(vmin=vmin, vmax=vmax)
@@ -226,11 +153,26 @@ def make_colorbar_image(vmin: float, vmax: float, cmap_name: str, label: str = "
     buf.seek(0)
     return Image.open(buf)
 
+
+def sample_from_array(src, arr, lon, lat):
+    """Amostra arr (mesma grade do raster) no ponto (lon/lat EPSG:4326)."""
+    transformer = get_transformer_to_raster(src.crs)
+    if transformer:
+        x, y = transformer.transform(lon, lat)
+    else:
+        x, y = lon, lat
+
+    r, c = rowcol(src.transform, x, y)
+    if r < 0 or c < 0 or r >= arr.shape[0] or c >= arr.shape[1]:
+        return np.nan
+    v = arr[r, c]
+    return float(v) if np.isfinite(v) else np.nan
+
+
 # =====================================================================
-# PÁGINA 1 — MACRÓFITAS (mantida igual)
+# PÁGINA 1 — MACRÓFITAS
 # =====================================================================
 if pagina == "🌿 Macrófitas":
-
     st.subheader("🌿 Monitoramento de Macrófitas")
 
     df_area = pd.read_csv(csv_path)
@@ -243,7 +185,10 @@ if pagina == "🌿 Macrófitas":
     min_date, max_date = df_area["Data"].min(), df_area["Data"].max()
 
     start_date, end_date = st.sidebar.date_input(
-        "📆 Intervalo de datas:", [min_date, max_date], min_value=min_date, max_value=max_date
+        "📆 Intervalo de datas:",
+        [min_date, max_date],
+        min_value=min_date,
+        max_value=max_date
     )
 
     st.subheader("📆 Análise Mensal de Área Média")
@@ -251,12 +196,14 @@ if pagina == "🌿 Macrófitas":
     mensal = df_area.groupby("Mês").mean(numeric_only=True).reset_index()
 
     fig_mensal = px.bar(
-        mensal, x="Mês", y=mensal["Area_m2"] / 10_000,
+        mensal,
+        x="Mês",
+        y=mensal["Area_m2"] / 10_000,
         labels={"y": "Área Média (ha)"},
-        title="Área Média de Macrófitas por Mês", text_auto=".2s"
+        title="Área Média de Macrófitas por Mês",
+        text_auto=".2s"
     )
     st.plotly_chart(fig_mensal, use_container_width=True)
-
     st.markdown("---")
 
     filtradas = df_area[
@@ -264,8 +211,8 @@ if pagina == "🌿 Macrófitas":
         (df_area["Data"] <= pd.to_datetime(end_date))
     ]
 
-    total_ha = filtradas["Area_ha"].sum()
-    max_ha = filtradas["Area_ha"].max()
+    total_ha = float(filtradas["Area_ha"].sum())
+    max_ha = float(filtradas["Area_ha"].max())
     data_max = filtradas.loc[filtradas["Area_ha"].idxmax(), "Data"].strftime("%Y-%m-%d")
     mean_ha = filtradas.groupby(filtradas["Data"].dt.year)["Area_ha"].mean()
 
@@ -273,7 +220,7 @@ if pagina == "🌿 Macrófitas":
     col1, col2, col3 = st.columns(3)
     col1.metric("🌱 Área Total", f"{total_ha:,.2f} ha")
     col2.metric("📈 Máxima", f"{max_ha:,.2f} ha", data_max)
-    col3.metric("📊 Média Anual", f"{mean_ha.mean():,.2f} ha")
+    col3.metric("📊 Média Anual", f"{float(mean_ha.mean()):,.2f} ha")
 
     fig_area = px.line(
         filtradas,
@@ -285,7 +232,10 @@ if pagina == "🌿 Macrófitas":
     )
     st.plotly_chart(fig_area, use_container_width=True)
 
-    classif_files = sorted([f for f in os.listdir(classif_folder) if f.startswith("classificado_macrofitas") and f.endswith(".tif")])
+    classif_files = sorted([
+        f for f in os.listdir(classif_folder)
+        if f.startswith("classificado_macrofitas") and f.endswith(".tif")
+    ])
     dates = [f.replace("classificado_macrofitas_", "").replace(".tif", "") for f in classif_files]
 
     selected_date = st.selectbox("📅 Selecione a data da imagem:", dates)
@@ -299,13 +249,16 @@ if pagina == "🌿 Macrófitas":
             img = src.read(1)
             bounds = src.bounds
 
-        m = folium.Map(location=[(bounds.top + bounds.bottom)/2, (bounds.left + bounds.right)/2], zoom_start=13)
+        m = folium.Map(
+            location=[(bounds.top + bounds.bottom) / 2, (bounds.left + bounds.right) / 2],
+            zoom_start=13
+        )
         overlay_img = np.where(img == 1, 255, 0).astype(np.uint8)
 
         raster_layers.ImageOverlay(
             image=overlay_img,
             bounds=[[bounds.bottom, bounds.left], [bounds.top, bounds.right]],
-            colormap=lambda x: (0, 1, 0, x/255),
+            colormap=lambda x: (0, 1, 0, x / 255),
             opacity=0.6,
         ).add_to(m)
 
@@ -325,18 +278,23 @@ if pagina == "🌿 Macrófitas":
                 path = os.path.join(classif_folder, f)
                 with rasterio.open(path) as src:
                     try:
-                        row, col = rowcol(src.transform, lon, lat)
-                        val = src.read(1)[row, col]
+                        rr, cc = rowcol(src.transform, lon, lat)
+                        val = src.read(1)[rr, cc]
                         resultados.append({"Data": dt, "Macrofita": int(val)})
-                    except:
+                    except Exception:
                         resultados.append({"Data": dt, "Macrofita": np.nan})
 
             df_ponto = pd.DataFrame(resultados)
             df_ponto["Data"] = pd.to_datetime(df_ponto["Data"])
             df_ponto = df_ponto.sort_values("Data")
 
-            fig2 = px.line(df_ponto, x="Data", y="Macrofita", markers=True,
-                           title="Presença de Macrófitas (1=sim, 0=não)")
+            fig2 = px.line(
+                df_ponto,
+                x="Data",
+                y="Macrofita",
+                markers=True,
+                title="Presença de Macrófitas (1=sim, 0=não)"
+            )
             fig2.update_yaxes(dtick=1, range=[-0.1, 1.1])
             st.plotly_chart(fig2, use_container_width=True)
         else:
@@ -352,7 +310,7 @@ if pagina == "🌿 Macrófitas":
     st.subheader("📅 Comparação entre Anos")
     years = sorted(df_area["Data"].dt.year.unique())
     year1 = st.selectbox("Ano 1:", years, index=3 if len(years) > 3 else 0)
-    year2 = st.selectbox("Ano 2:", years, index=len(years)-1)
+    year2 = st.selectbox("Ano 2:", years, index=len(years) - 1)
 
     df_y1 = df_area[df_area["Data"].dt.year == year1].groupby(df_area["Data"].dt.month).mean(numeric_only=True)
     df_y2 = df_area[df_area["Data"].dt.year == year2].groupby(df_area["Data"].dt.month).mean(numeric_only=True)
@@ -369,27 +327,16 @@ if pagina == "🌿 Macrófitas":
 
 # =====================================================================
 # PÁGINA 2 — QUALIDADE DA ÁGUA
-# (SEM comparar datas; COM mapa médio; COM climatologia mensal do ponto;
-#  escala fixa + contraste por stretch interno (p2–p98) + gamma)
 # =====================================================================
 else:
-    import matplotlib.pyplot as plt
-    import matplotlib.cm as cm
-    from matplotlib.colors import Normalize
-    from io import BytesIO
-
     st.subheader("💧 Qualidade da Água")
     st.caption(
         "Derivado de DATA_*.tif (EPSG:3857) • filtro: remove macrófitas (NDVI > 0.5) • "
         "pixels zerados ocultos • NDWI apenas diagnóstico."
     )
 
-    EPS = 1e-6
     NDVI_MACROFITAS_THR = 0.50
 
-    # ----------------------------
-    # Escalas fixas + unidades
-    # ----------------------------
     VAR_SPECS = {
         "chlor_a":     {"label": "Clorofila-a", "unit": "µg/L", "vmin": 15.0, "vmax": 140.0},
         "turbidity":   {"label": "Turbidez",    "unit": "NTU",  "vmin": 2.5,  "vmax": 20.0},
@@ -397,135 +344,40 @@ else:
         "secchi":      {"label": "Secchi",      "unit": "cm",   "vmin": 20.0, "vmax": 100.0},
     }
 
-    # ----------------------------
-    # Funções
-    # ----------------------------
-    def list_water_files(folder: pathlib.Path):
-        return sorted([p for p in folder.glob("DATA_*.tif")])
+    def robust_scale_to_range(proxy, vmin_out, vmax_out):
+        p2 = np.nanpercentile(proxy, 2)
+        p98 = np.nanpercentile(proxy, 98)
+        if not np.isfinite(p2) or not np.isfinite(p98) or p98 <= p2:
+            return np.full_like(proxy, np.nan, dtype="float32")
+        proxy01 = (proxy - p2) / (p98 - p2 + EPS)
+        proxy01 = np.clip(proxy01, 0, 1)
+        return (vmin_out + proxy01 * (vmax_out - vmin_out)).astype("float32")
 
-    def parse_date_from_filename(p: pathlib.Path) -> str:
-        return p.stem.replace("DATA_", "")
-
-    def bounds_3857_to_4326(bounds):
-        transformer = Transformer.from_crs("EPSG:3857", "EPSG:4326", always_xy=True)
-        left, bottom, right, top = bounds.left, bounds.bottom, bounds.right, bounds.top
-        lon1, lat1 = transformer.transform(left, bottom)
-        lon2, lat2 = transformer.transform(right, top)
-        return [[lat1, lon1], [lat2, lon2]]  # [[SW],[NE]]
-
-    def get_transformer_to_raster(raster_crs):
-        if raster_crs is None:
-            return None
-        epsg = raster_crs.to_epsg() if hasattr(raster_crs, "to_epsg") else None
-        if epsg == 4326:
-            return None
-        return Transformer.from_crs("EPSG:4326", raster_crs, always_xy=True)
-
-    def read_band(src, idx):
-        return src.read(idx).astype("float32")
-
-    def compute_ndvi(R, NIR):
-        return (NIR - R) / (NIR + R + EPS)
-
-    def compute_ndwi(G, NIR):
-        return (G - NIR) / (G + NIR + EPS)
-
-    def normalize_to_uint8_diag(a, vmin=None, vmax=None):
-        """Para NDVI/NDWI (diagnóstico) — autoescala robusta."""
-        a = a.astype("float32")
-        valid = np.isfinite(a)
-        if not np.any(valid):
-            return np.zeros_like(a, dtype=np.uint8), 0.0, 1.0
-        if vmin is None:
-            vmin = float(np.nanpercentile(a, 2))
-        if vmax is None:
-            vmax = float(np.nanpercentile(a, 98))
-        if vmax <= vmin:
-            vmax = vmin + 1e-6
-        x = (a - vmin) / (vmax - vmin)
-        x = np.clip(x, 0, 1)
-        return (x * 255).astype(np.uint8), vmin, vmax
-
-    def colormap_rgba(uint8_img, cmap_name="viridis"):
-        cmap = cm.get_cmap(cmap_name)
-        x = uint8_img.astype("float32") / 255.0
-        rgba = (cmap(x) * 255).astype(np.uint8)
-        return rgba
-
-    def make_colorbar_image(vmin: float, vmax: float, cmap_name: str, label: str = "") -> Image.Image:
-        fig, ax = plt.subplots(figsize=(5.2, 0.7))
-        fig.subplots_adjust(bottom=0.35, left=0.08, right=0.98, top=0.95)
-        norm = Normalize(vmin=vmin, vmax=vmax)
-        cb = plt.colorbar(
-            plt.cm.ScalarMappable(norm=norm, cmap=plt.get_cmap(cmap_name)),
-            cax=ax, orientation="horizontal"
-        )
-        if label:
-            cb.set_label(label, fontsize=10)
-        cb.ax.tick_params(labelsize=9)
-        buf = BytesIO()
-        fig.savefig(buf, format="png", dpi=200, bbox_inches="tight", transparent=True)
-        plt.close(fig)
-        buf.seek(0)
-        return Image.open(buf)
-
-    def sample_from_array(src, arr, lon, lat):
-        """Amostra arr (mesma grade do raster) no ponto (lon/lat EPSG:4326)."""
-        transformer = get_transformer_to_raster(src.crs)
-        if transformer:
-            x, y = transformer.transform(lon, lat)
-        else:
-            x, y = lon, lat
-        r, c = rowcol(src.transform, x, y)
-        if r < 0 or c < 0 or r >= arr.shape[0] or c >= arr.shape[1]:
-            return np.nan
-        v = arr[r, c]
-        return float(v) if np.isfinite(v) else np.nan
-
-    # Proxy -> reescala para faixa física fixa (Secchi estável)
     def compute_water_variable_scaled(B, G, R, NIR, var_key: str):
         spec = VAR_SPECS[var_key]
         vmin, vmax = float(spec["vmin"]), float(spec["vmax"])
 
-        def _robust_scale_to_range(proxy, vmin_out, vmax_out):
-            p2 = np.nanpercentile(proxy, 2)
-            p98 = np.nanpercentile(proxy, 98)
-            if not np.isfinite(p2) or not np.isfinite(p98) or p98 <= p2:
-                return np.full_like(proxy, np.nan, dtype="float32")
-            proxy01 = (proxy - p2) / (p98 - p2 + EPS)
-            proxy01 = np.clip(proxy01, 0, 1)
-            return (vmin_out + proxy01 * (vmax_out - vmin_out)).astype("float32")
-
         if var_key == "chlor_a":
             proxy = (NIR / (R + EPS))
-            out = _robust_scale_to_range(proxy, vmin, vmax)
+            return robust_scale_to_range(proxy, vmin, vmax)
 
-        elif var_key == "phycocyanin":
+        if var_key == "phycocyanin":
             proxy = (R / (G + EPS))
-            out = _robust_scale_to_range(proxy, vmin, vmax)
+            return robust_scale_to_range(proxy, vmin, vmax)
 
-        elif var_key == "turbidity":
+        if var_key == "turbidity":
             proxy = R / (B + G + EPS)
-            out = _robust_scale_to_range(proxy, vmin, vmax)
+            return robust_scale_to_range(proxy, vmin, vmax)
 
-        elif var_key == "secchi":
-            # Secchi derivado da turbidez (estável; evita saturar em 20)
+        if var_key == "secchi":
             proxy_turb = R / (B + G + EPS)
-
-            # turbidez física (2.5–20 NTU)
-            turb_nt = _robust_scale_to_range(proxy_turb, 2.5, 20.0)
-
-            # turb 2.5 -> secchi ~100 ; turb 20 -> secchi ~20
+            turb_nt = robust_scale_to_range(proxy_turb, 2.5, 20.0)  # NTU
             sec01 = (turb_nt - 2.5) / (20.0 - 2.5 + EPS)
             out = 100.0 - np.clip(sec01, 0, 1) * (100.0 - 20.0)
-            out = np.clip(out, vmin, vmax).astype("float32")
+            return np.clip(out, vmin, vmax).astype("float32")
 
-        else:
-            raise ValueError("Variável desconhecida.")
+        raise ValueError("Variável desconhecida.")
 
-        return out
-
-    # Ler/filtrar uma cena (NDVI + zeros)
     def compute_filtered_var_and_indices(tif_file: pathlib.Path, var_key: str):
         with rasterio.open(tif_file) as src:
             if src.count < 4:
@@ -539,10 +391,7 @@ else:
             ndvi = compute_ndvi(R, NIR)
             ndwi = compute_ndwi(G, NIR)
 
-            # mascara de pixels zerados (sem dado)
             zero_mask = (B == 0) & (G == 0) & (R == 0) & (NIR == 0)
-
-            # manter: não-macrófita e não-zero
             valid_mask = np.isfinite(ndvi) & (ndvi <= NDVI_MACROFITAS_THR) & (~zero_mask)
 
             var_scaled = compute_water_variable_scaled(B, G, R, NIR, var_key)
@@ -556,11 +405,8 @@ else:
             }
             return var_filt, ndvi, ndwi, meta
 
-    # ----------------------------
-    # Arquivos
-    # ----------------------------
     water_files = list_water_files(base_path)
-    if len(water_files) == 0:
+    if not water_files:
         st.warning("Nenhum arquivo encontrado com padrão DATA_*.tif na raiz do repositório.")
         st.stop()
 
@@ -573,9 +419,6 @@ else:
         "Secchi": "secchi",
     }
 
-    # ----------------------------
-    # Controles
-    # ----------------------------
     c1, c2, c3, c4, c5 = st.columns([1.4, 1.5, 1.0, 1.3, 1.2])
     with c1:
         var_label = st.selectbox("Variável:", list(var_map.keys()), index=0)
@@ -588,10 +431,7 @@ else:
     with c5:
         show_point_clim = st.checkbox("Climatologia mensal do ponto", value=True)
 
-    # Contraste visual (não muda a escala fixa; só “stretch”)
     gamma = st.slider("Contraste do mapa (gamma)", 0.40, 2.00, 0.85, 0.05)
-
-    # “Stretch interno” para contraste (p2–p98 dentro da escala fixa)
     use_internal_stretch = st.checkbox("Aumentar contraste (p2–p98 dentro da escala fixa)", value=True)
 
     var_key = var_map[var_label]
@@ -602,20 +442,14 @@ else:
 
     tif_path = base_path / f"DATA_{selected_date}.tif"
 
-    # ----------------------------
-    # Carrega data selecionada
-    # ----------------------------
     try:
         var_A, ndvi_A, ndwi_A, meta_A = compute_filtered_var_and_indices(tif_path, var_key)
     except Exception as e:
         st.error(f"Erro ao processar {tif_path.name}: {e}")
         st.stop()
 
-    # ----------------------------
-    # Mapa médio (média pixel-a-pixel) — robusto (ignora pixels NaN)
-    # ----------------------------
     @st.cache_data(show_spinner=True)
-    def compute_mean_raster(_var_key: str, vmin_fixed: float, vmax_fixed: float):
+    def compute_mean_raster(_var_key: str, _vmin: float, _vmax: float):
         sum_arr = None
         cnt_arr = None
         meta_ref = None
@@ -623,13 +457,11 @@ else:
         for p in water_files:
             var_f, _, _, meta = compute_filtered_var_and_indices(p, _var_key)
 
-            # garante faixa final (escala fixa) e remove NaN
             var_f = np.where(
-                np.isfinite(var_f) & (var_f >= vmin_fixed) & (var_f <= vmax_fixed),
+                np.isfinite(var_f) & (var_f >= _vmin) & (var_f <= _vmax),
                 var_f,
                 np.nan
             )
-
             valid = np.isfinite(var_f)
 
             if sum_arr is None:
@@ -646,47 +478,35 @@ else:
         mean_arr = np.full_like(sum_arr, np.nan, dtype=np.float32)
         ok = cnt_arr > 0
         mean_arr[ok] = (sum_arr[ok] / cnt_arr[ok]).astype(np.float32)
-
         return mean_arr, meta_ref, cnt_arr
 
     if use_mean_map:
-        map_arr, meta_use, cnt_arr = compute_mean_raster(var_key, vmin_fixed, vmax_fixed)
+        map_arr, meta_use, _ = compute_mean_raster(var_key, vmin_fixed, vmax_fixed)
         map_title = f"{label_unit} • MÉDIA (todas as datas)"
     else:
         map_arr = var_A
         meta_use = meta_A
         map_title = f"{label_unit} • {selected_date}"
 
-    # ----------------------------
-    # Estatística espacial
-    # ----------------------------
     vals = map_arr[np.isfinite(map_arr)]
     if vals.size == 0:
         st.warning("Não sobraram pixels válidos após filtro NDVI e remoção de zeros.")
         st.stop()
 
+    st.markdown("### 📊 Estatística espacial (após filtro NDVI + zeros)")
     stats = {
         "n_pixels": int(vals.size),
         "média": float(np.nanmean(vals)),
         "mediana": float(np.nanmedian(vals)),
         "p10": float(np.nanpercentile(vals, 10)),
         "p90": float(np.nanpercentile(vals, 90)),
-        "mín": float(np.nanmin(vals)),
-        "máx": float(np.nanmax(vals)),
     }
-
-    st.markdown("### 📊 Estatística espacial (após filtro NDVI + zeros)")
     s1, s2, s3, s4 = st.columns(4)
     s1.metric("Pixels válidos", f"{stats['n_pixels']:,}")
     s2.metric("Média", f"{stats['média']:.2f} {unit}")
     s3.metric("Mediana", f"{stats['mediana']:.2f} {unit}")
     s4.metric("p10–p90", f"{stats['p10']:.2f} – {stats['p90']:.2f} {unit}")
 
-    # ----------------------------
-    # Normalização para visualização:
-    # - escala fixa (vmin_fixed–vmax_fixed) para comparabilidade
-    # - opcional: stretch interno (p2–p98) para contraste (SEM mudar escala oficial)
-    # ----------------------------
     if use_internal_stretch:
         p2 = float(np.nanpercentile(vals, 2))
         p98 = float(np.nanpercentile(vals, 98))
@@ -697,27 +517,18 @@ else:
     else:
         vmin_vis, vmax_vis = vmin_fixed, vmax_fixed
 
-    # ----------------------------
-    # Mapa grande
-    # ----------------------------
     st.markdown("### 🗺️ Mapa interativo (escala fixa + contraste)")
 
     inrange_fixed = np.isfinite(map_arr) & (map_arr >= vmin_fixed) & (map_arr <= vmax_fixed)
-
     norm = np.zeros_like(map_arr, dtype=np.float32)
-    # normaliza pelo range visual (vmin_vis–vmax_vis), mas mantém filtro pela escala fixa
     norm[inrange_fixed] = (map_arr[inrange_fixed] - vmin_vis) / (vmax_vis - vmin_vis + EPS)
     norm[inrange_fixed] = np.clip(norm[inrange_fixed], 0, 1)
-
-    # gamma (contraste visual)
     norm[inrange_fixed] = norm[inrange_fixed] ** float(gamma)
 
     img_u8 = np.zeros_like(map_arr, dtype=np.uint8)
     img_u8[inrange_fixed] = (norm[inrange_fixed] * 255.0).astype(np.uint8)
 
     rgba = colormap_rgba(img_u8, cmap_name=cmap_name)
-
-    # alpha: transparente fora dos pixels válidos (inclui zeros/NaN)
     rgba[..., 3] = 0
     rgba[inrange_fixed, 3] = 255
 
@@ -726,7 +537,6 @@ else:
     center_lon = (folium_bounds[0][1] + folium_bounds[1][1]) / 2
 
     m = folium.Map(location=[center_lat, center_lon], tiles="OpenStreetMap", zoom_control=True)
-
     raster_layers.ImageOverlay(
         image=rgba,
         bounds=folium_bounds,
@@ -734,7 +544,6 @@ else:
         interactive=True,
         zindex=1
     ).add_to(m)
-
     m.fit_bounds(folium_bounds)
 
     legend_html = f"""
@@ -753,16 +562,12 @@ else:
 
     click = st_folium(m, width=1200, height=700)
 
-    # Colorbar sempre na escala fixa (científica)
     cb_img = make_colorbar_image(vmin=vmin_fixed, vmax=vmax_fixed, cmap_name=cmap_name, label=label_unit)
     st.image(cb_img, use_column_width=False)
 
     st.markdown("---")
-
-    # ----------------------------
-    # Série temporal no ponto + climatologia mensal do ponto
-    # ----------------------------
     st.markdown("### 📈 Série temporal no ponto clicado")
+
     if click and click.get("last_clicked"):
         lon = click["last_clicked"]["lng"]
         lat = click["last_clicked"]["lat"]
@@ -776,7 +581,7 @@ else:
                 with rasterio.open(p) as src:
                     val = sample_from_array(src, var_f, lon, lat)
                 series.append({"Data": dt_str, "Valor": val})
-            except:
+            except Exception:
                 series.append({"Data": dt_str, "Valor": np.nan})
 
         df_ts = pd.DataFrame(series)
@@ -784,7 +589,10 @@ else:
         df_ts = df_ts.sort_values("Data")
 
         fig_ts = px.line(
-            df_ts, x="Data", y="Valor", markers=True,
+            df_ts,
+            x="Data",
+            y="Valor",
+            markers=True,
             title=f"Série temporal — {label_unit}",
             labels={"Valor": label_unit}
         )
@@ -797,7 +605,10 @@ else:
             clim_pt = df_ts.groupby("Mes")["Valor"].mean().reset_index()
 
             fig_clim = px.line(
-                clim_pt, x="Mes", y="Valor", markers=True,
+                clim_pt,
+                x="Mes",
+                y="Valor",
+                markers=True,
                 title=f"Climatologia mensal no ponto — {label_unit}",
                 labels={"Valor": label_unit, "Mes": "Mês"}
             )
@@ -812,11 +623,8 @@ else:
         st.info("Clique em um ponto no mapa para extrair a série temporal e a climatologia mensal do ponto.")
 
     st.markdown("---")
-
-    # ----------------------------
-    # Diagnóstico NDVI/NDWI (data selecionada)
-    # ----------------------------
     st.markdown("### 🧪 Diagnóstico (NDVI e NDWI) — data selecionada")
+
     with st.expander("Ver NDVI e NDWI (mapas)"):
         cA, cB = st.columns(2)
         with cA:
@@ -832,16 +640,3 @@ else:
         "Qualidade da Água • filtro: NDVI ≤ 0.5 (remove macrófitas). "
         "Pixels zerados ocultos. NDWI exibido apenas para diagnóstico."
     )
-
-
-
-
-
-
-
-
-
-
-
-
-
