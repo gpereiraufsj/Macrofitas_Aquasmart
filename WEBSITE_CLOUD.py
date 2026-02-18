@@ -386,7 +386,31 @@ else:
             return robust_scale_to_range(proxy, vmin, vmax)
 
         if var_key == "turbidity":
-            proxy = R / (B + G + EPS)
+            denom = (B + G).astype("float32")
+
+            # Evita explosão do proxy quando (B+G) ~ 0 (água muito escura / sombra)
+            denom_valid = np.isfinite(denom) & (denom > 0)
+
+            if np.any(denom_valid):
+                # limiar robusto: descarta a cauda “quase zero”
+                d_thr = float(np.nanpercentile(denom[denom_valid], 2))
+                d_thr = max(d_thr, 1e-3)  # segurança
+            else:
+                d_thr = 1e-3
+
+            safe = denom >= d_thr
+
+            proxy = np.full_like(R, np.nan, dtype="float32")
+            proxy[safe] = (R[safe] / (denom[safe] + EPS)).astype("float32")
+
+            # Winsorização: corta extremos que atrapalham percentis no mapa médio
+            pv = proxy[np.isfinite(proxy)]
+            if pv.size > 0:
+                p1 = float(np.nanpercentile(pv, 1))
+                p99 = float(np.nanpercentile(pv, 99))
+                if np.isfinite(p1) and np.isfinite(p99) and p99 > p1:
+                    proxy = np.clip(proxy, p1, p99)
+
             return robust_scale_to_range(proxy, vmin, vmax)
 
         if var_key == "secchi":
@@ -681,3 +705,4 @@ else:
         "Qualidade da Água • filtro: NDVI ≤ 0.5 (remove macrófitas). "
         "Pixels zerados ocultos. NDWI exibido apenas para diagnóstico."
     )
+
