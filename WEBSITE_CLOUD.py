@@ -345,36 +345,32 @@ else:
         "secchi":      {"label": "Secchi",      "unit": "cm",   "vmin": 20.0, "vmax": 100.0},
     }
 
-   if var_key == "turbidity":
-            denom = (B + G).astype("float32")
+   def robust_scale_to_range(proxy, vmin_out, vmax_out, scale_mask=None):
+    """
+    Reescala proxy -> [vmin_out, vmax_out] usando percentis robustos (2–98),
+    mas calculando os percentis apenas onde scale_mask=True (ex.: ~zero_mask).
+    """
+    proxy = np.asarray(proxy, dtype="float32")
 
-            denom_valid = np.isfinite(denom) & (denom > 0)
-            if np.any(denom_valid):
-                d_thr = float(np.nanpercentile(denom[denom_valid], 2))
-                d_thr = max(d_thr, 1e-3)
-            else:
-                d_thr = 1e-3
+    if scale_mask is None:
+        valid = np.isfinite(proxy)
+    else:
+        valid = np.isfinite(proxy) & scale_mask
 
-            safe = denom >= d_thr
+    if not np.any(valid):
+        return np.full_like(proxy, np.nan, dtype="float32")
 
-            proxy = np.full_like(R, np.nan, dtype="float32")
-            proxy[safe] = (R[safe] / (denom[safe] + EPS)).astype("float32")
+    p2 = float(np.nanpercentile(proxy[valid], 2))
+    p98 = float(np.nanpercentile(proxy[valid], 98))
 
-            # ✅ compressão dinâmica (evita saturar tudo em 20)
-            proxy = np.log1p(proxy)
+    if (not np.isfinite(p2)) or (not np.isfinite(p98)) or (p98 <= p2):
+        return np.full_like(proxy, np.nan, dtype="float32")
 
-            # winsoriza extremos (opcional mas ajuda muito no mapa médio)
-            pv = proxy[np.isfinite(proxy)]
-            if pv.size > 0:
-                p1 = float(np.nanpercentile(pv, 1))
-                p99 = float(np.nanpercentile(pv, 99))
-                if np.isfinite(p1) and np.isfinite(p99) and p99 > p1:
-                    proxy = np.clip(proxy, p1, p99)
+    proxy01 = (proxy - p2) / (p98 - p2 + EPS)
+    proxy01 = np.clip(proxy01, 0.0, 1.0)
 
-            out = robust_scale_to_range(proxy, vmin, vmax)
-
-            # ✅ garante faixa final
-            return np.clip(out, vmin, vmax).astype("float32")
+    out = (vmin_out + proxy01 * (vmax_out - vmin_out)).astype("float32")
+    return out
        
     def compute_water_variable_scaled(B, G, R, NIR, var_key: str, scale_mask=None):
     spec = VAR_SPECS[var_key]
@@ -703,6 +699,7 @@ else:
         "Qualidade da Água • filtro: NDVI ≤ 0.5 (remove macrófitas). "
         "Pixels zerados ocultos. NDWI exibido apenas para diagnóstico."
     )
+
 
 
 
