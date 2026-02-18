@@ -344,74 +344,38 @@ else:
         "secchi":      {"label": "Secchi",      "unit": "cm",   "vmin": 20.0, "vmax": 100.0},
     }
 
-   def robust_scale_to_range(proxy, vmin_out, vmax_out):
-    """
-    Reescala proxy para [vmin_out, vmax_out] via percentis 2–98.
-    Se o proxy for constante (p98 <= p2), devolve uma imagem constante no meio da escala.
-    """
-    proxy = np.asarray(proxy, dtype="float32")
+    def robust_scale_to_range(proxy, vmin_out, vmax_out):
+        p2 = np.nanpercentile(proxy, 2)
+        p98 = np.nanpercentile(proxy, 98)
+        if not np.isfinite(p2) or not np.isfinite(p98) or p98 <= p2:
+            return np.full_like(proxy, np.nan, dtype="float32")
+        proxy01 = (proxy - p2) / (p98 - p2 + EPS)
+        proxy01 = np.clip(proxy01, 0, 1)
+        return (vmin_out + proxy01 * (vmax_out - vmin_out)).astype("float32")
 
-    valid = np.isfinite(proxy)
-    if not np.any(valid):
-        return np.full_like(proxy, np.nan, dtype="float32")
+    def compute_water_variable_scaled(B, G, R, NIR, var_key: str):
+        spec = VAR_SPECS[var_key]
+        vmin, vmax = float(spec["vmin"]), float(spec["vmax"])
 
-    pv = proxy[valid]
-    p2 = float(np.nanpercentile(pv, 2))
-    p98 = float(np.nanpercentile(pv, 98))
+        if var_key == "chlor_a":
+            proxy = (NIR / (R + EPS))
+            return robust_scale_to_range(proxy, vmin, vmax)
 
-    # caso "proxy constante" / sem contraste
-    if (not np.isfinite(p2)) or (not np.isfinite(p98)) or (p98 <= p2):
-        mid = (vmin_out + vmax_out) / 2.0
-        out = np.full_like(proxy, np.nan, dtype="float32")
-        out[valid] = mid
-        return out
+        if var_key == "phycocyanin":
+            proxy = (R / (G + EPS))
+            return robust_scale_to_range(proxy, vmin, vmax)
 
-    proxy01 = (proxy - p2) / (p98 - p2 + EPS)
-    proxy01 = np.clip(proxy01, 0, 1)
+        if var_key == "turbidity":
+            proxy = R / (B + G + EPS)
+            return robust_scale_to_range(proxy, vmin, vmax)
 
-    out = vmin_out + proxy01 * (vmax_out - vmin_out)
-    out[~valid] = np.nan
-    return out.astype("float32")
+        if var_key == "secchi":
+            proxy_turb = R / (B + G + EPS)
+            turb_nt = robust_scale_to_range(proxy_turb, 2.5, 20.0)  # NTU
+            sec01 = (turb_nt - 2.5) / (20.0 - 2.5 + EPS)
+            out = 100.0 - np.clip(sec01, 0, 1) * (100.0 - 20.0)
+            return np.clip(out, vmin, vmax).astype("float32")
 
-
-def compute_water_variable_scaled(B, G, R, NIR, var_key: str):
-    spec = VAR_SPECS[var_key]
-    vmin, vmax = float(spec["vmin"]), float(spec["vmax"])
-
-    # garante float32
-    B = np.asarray(B, dtype="float32")
-    G = np.asarray(G, dtype="float32")
-    R = np.asarray(R, dtype="float32")
-    NIR = np.asarray(NIR, dtype="float32")
-
-    if var_key == "chlor_a":
-        denom = np.maximum(R, EPS)
-        proxy = NIR / denom
-        return robust_scale_to_range(proxy, vmin, vmax)
-
-    elif var_key == "phycocyanin":
-        denom = np.maximum(G, EPS)
-        proxy = R / denom
-        return robust_scale_to_range(proxy, vmin, vmax)
-
-    elif var_key == "turbidity":
-        denom = np.maximum(B + G, EPS)
-        proxy = R / denom
-        return robust_scale_to_range(proxy, vmin, vmax)
-
-    elif var_key == "secchi":
-        denom = np.maximum(B + G, EPS)
-        proxy_turb = R / denom
-
-        turb_nt = robust_scale_to_range(proxy_turb, 2.5, 20.0)  # NTU
-        if not np.any(np.isfinite(turb_nt)):
-            return np.full_like(turb_nt, np.nan, dtype="float32")
-
-        sec01 = (turb_nt - 2.5) / (20.0 - 2.5 + EPS)
-        out = 100.0 - np.clip(sec01, 0, 1) * (100.0 - 20.0)
-        return np.clip(out, vmin, vmax).astype("float32")
-
-    else:
         raise ValueError("Variável desconhecida.")
 
     def compute_filtered_var_and_indices(tif_file: pathlib.Path, var_key: str):
@@ -676,5 +640,3 @@ def compute_water_variable_scaled(B, G, R, NIR, var_key: str):
         "Qualidade da Água • filtro: NDVI ≤ 0.5 (remove macrófitas). "
         "Pixels zerados ocultos. NDWI exibido apenas para diagnóstico."
     )
-
-
