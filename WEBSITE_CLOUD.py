@@ -494,11 +494,7 @@ else:
         for p in water_files:
             var_f, _, _, meta = compute_filtered_var_and_indices(p, _var_key)
 
-            var_f = np.where(
-                np.isfinite(var_f) & (var_f >= _vmin) & (var_f <= _vmax),
-                var_f,
-                np.nan
-            )
+            var_f = np.where(np.isfinite(var_f), var_f, np.nan)
             valid = np.isfinite(var_f)
 
             if sum_arr is None:
@@ -555,37 +551,28 @@ else:
         vmin_vis, vmax_vis = vmin_fixed, vmax_fixed
 
     st.markdown("### 🗺️ Mapa interativo (escala fixa + contraste)")
-
-    inrange_fixed = np.isfinite(map_arr) & (map_arr >= vmin_fixed) & (map_arr <= vmax_fixed)
-     # --- máscara de pixels válidos para desenhar (não depende de faixa fixa)
+    
+    # -----------------------------------------------------------------
+    # VISUALIZAÇÃO: alpha por pixels válidos + stretch robusto (p2–p98)
+    # -----------------------------------------------------------------
     valid_draw = np.isfinite(map_arr)
 
-    # --- clip só para visualização (mantém legenda fixa)
-      # faixa VISUAL baseada nos dados (winsorization), sem “estourar” tudo no vmax
-    vals = map_arr[valid_draw]
-    p2 = float(np.nanpercentile(vals, 2))
-    p98 = float(np.nanpercentile(vals, 98))
+    vals_vis = map_arr[valid_draw]
+    p2 = float(np.nanpercentile(vals_vis, 2))
+    p98 = float(np.nanpercentile(vals_vis, 98))
 
-    # segurança: garante faixa mínima
+    # fallback se colapsar
     if (not np.isfinite(p2)) or (not np.isfinite(p98)) or (p98 <= p2 + 1e-12):
-        p2 = float(np.nanmin(vals))
-        p98 = float(np.nanmax(vals))
+        p2 = float(np.nanmin(vals_vis))
+        p98 = float(np.nanmax(vals_vis))
+        if p98 <= p2 + 1e-12:
+            p2, p98 = float(vmin_fixed), float(vmax_fixed)
 
-    # aqui você escolhe: limitar a visualização dentro da escala fixa OU não
-    # Se quiser forçar dentro do fixo:
-    p2 = max(p2, vmin_fixed)
-    p98 = min(p98, vmax_fixed)
-
-    if p98 <= p2 + 1e-12:
-        p2, p98 = vmin_fixed, vmax_fixed
-
+    # clip APENAS para visual (não limita na escala fixa)
     map_clip = np.clip(map_arr, p2, p98)
 
-    # e usa p2/p98 na normalização (não vmin_vis/vmax_vis)
-    vmin_norm, vmax_norm = p2, p98
-
     norm = np.zeros_like(map_arr, dtype=np.float32)
-    norm[valid_draw] = (map_clip[valid_draw] - vmin_norm) / (vmax_norm - vmin_norm + EPS)
+    norm[valid_draw] = (map_clip[valid_draw] - p2) / (p98 - p2 + EPS)
     norm[valid_draw] = np.clip(norm[valid_draw], 0, 1)
     norm[valid_draw] = norm[valid_draw] ** float(gamma)
 
@@ -597,6 +584,7 @@ else:
     # alpha: mostra todo pixel válido
     rgba[..., 3] = 0
     rgba[valid_draw, 3] = 255
+    
 
     folium_bounds = meta_use["folium_bounds"]
     center_lat = (folium_bounds[0][0] + folium_bounds[1][0]) / 2
@@ -619,7 +607,7 @@ else:
         font-size: 12px;">
         <b>{map_title}</b><br/>
         escala fixa: [{vmin_fixed:.2f}, {vmax_fixed:.2f}] {unit}<br/>
-        contraste (visual): [{vmin_vis:.2f}, {vmax_vis:.2f}] {unit} {'(p2–p98 dentro da escala fixa)' if use_internal_stretch else '(igual à escala fixa)'}<br/>
+        janela visual (p2–p98): [{p2:.2f}, {p98:.2f}] {unit}<br/>
         filtro: NDVI ≤ {NDVI_MACROFITAS_THR:.2f} (remove macrófitas) • pixels zerados: ocultos<br/>
         colormap: {cmap_name} • gamma: {gamma:.2f}
     </div>
@@ -706,6 +694,7 @@ else:
         "Qualidade da Água • filtro: NDVI ≤ 0.5 (remove macrófitas). "
         "Pixels zerados ocultos. NDWI exibido apenas para diagnóstico."
     )
+
 
 
 
