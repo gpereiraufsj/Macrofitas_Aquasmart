@@ -557,17 +557,25 @@ else:
     st.markdown("### 🗺️ Mapa interativo (escala fixa + contraste)")
 
     inrange_fixed = np.isfinite(map_arr) & (map_arr >= vmin_fixed) & (map_arr <= vmax_fixed)
+     # --- máscara de pixels válidos para desenhar (não depende de faixa fixa)
+    valid_draw = np.isfinite(map_arr)
+
+    # --- clip só para visualização (mantém legenda fixa)
+    map_clip = np.clip(map_arr, vmin_vis, vmax_vis)
+
     norm = np.zeros_like(map_arr, dtype=np.float32)
-    norm[inrange_fixed] = (map_arr[inrange_fixed] - vmin_vis) / (vmax_vis - vmin_vis + EPS)
-    norm[inrange_fixed] = np.clip(norm[inrange_fixed], 0, 1)
-    norm[inrange_fixed] = norm[inrange_fixed] ** float(gamma)
+    norm[valid_draw] = (map_clip[valid_draw] - vmin_vis) / (vmax_vis - vmin_vis + EPS)
+    norm[valid_draw] = np.clip(norm[valid_draw], 0, 1)
+    norm[valid_draw] = norm[valid_draw] ** float(gamma)
 
     img_u8 = np.zeros_like(map_arr, dtype=np.uint8)
-    img_u8[inrange_fixed] = (norm[inrange_fixed] * 255.0).astype(np.uint8)
+    img_u8[valid_draw] = (norm[valid_draw] * 255.0).astype(np.uint8)
 
     rgba = colormap_rgba(img_u8, cmap_name=cmap_name)
+
+    # alpha: mostra todo pixel válido
     rgba[..., 3] = 0
-    rgba[inrange_fixed, 3] = 255
+    rgba[valid_draw, 3] = 255
 
     folium_bounds = meta_use["folium_bounds"]
     center_lat = (folium_bounds[0][0] + folium_bounds[1][0]) / 2
@@ -677,6 +685,7 @@ else:
         "Qualidade da Água • filtro: NDVI ≤ 0.5 (remove macrófitas). "
         "Pixels zerados ocultos. NDWI exibido apenas para diagnóstico."
     )
+
 
 
 
