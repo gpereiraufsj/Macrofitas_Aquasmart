@@ -388,13 +388,10 @@ else:
         if var_key == "turbidity":
             denom = (B + G).astype("float32")
 
-            # Evita explosão do proxy quando (B+G) ~ 0 (água muito escura / sombra)
             denom_valid = np.isfinite(denom) & (denom > 0)
-
             if np.any(denom_valid):
-                # limiar robusto: descarta a cauda “quase zero”
                 d_thr = float(np.nanpercentile(denom[denom_valid], 2))
-                d_thr = max(d_thr, 1e-3)  # segurança
+                d_thr = max(d_thr, 1e-3)
             else:
                 d_thr = 1e-3
 
@@ -403,7 +400,10 @@ else:
             proxy = np.full_like(R, np.nan, dtype="float32")
             proxy[safe] = (R[safe] / (denom[safe] + EPS)).astype("float32")
 
-            # Winsorização: corta extremos que atrapalham percentis no mapa médio
+            # ✅ compressão dinâmica (evita saturar tudo em 20)
+            proxy = np.log1p(proxy)
+
+            # winsoriza extremos (opcional mas ajuda muito no mapa médio)
             pv = proxy[np.isfinite(proxy)]
             if pv.size > 0:
                 p1 = float(np.nanpercentile(pv, 1))
@@ -411,7 +411,10 @@ else:
                 if np.isfinite(p1) and np.isfinite(p99) and p99 > p1:
                     proxy = np.clip(proxy, p1, p99)
 
-            return robust_scale_to_range(proxy, vmin, vmax)
+            out = robust_scale_to_range(proxy, vmin, vmax)
+
+            # ✅ garante faixa final
+            return np.clip(out, vmin, vmax).astype("float32")
 
         if var_key == "secchi":
             proxy_turb = R / (B + G + EPS)
@@ -442,6 +445,15 @@ else:
             valid_mask = np.isfinite(ndvi) & (ndvi <= NDVI_MACROFITAS_THR) & (~zero_mask)
 
             var_scaled = compute_water_variable_scaled(B, G, R, NIR, var_key)
+            
+            spec = VAR_SPECS[var_key]
+            vmin_fixed = float(spec["vmin"])
+            vmax_fixed = float(spec["vmax"])
+
+            var_scaled = np.clip(var_scaled, vmin_fixed, vmax_fixed)
+            var_filt = np.where(valid_mask, var_scaled, np.nan)
+            
+            
             var_filt = np.where(valid_mask, var_scaled, np.nan)
 
             meta = {
@@ -705,4 +717,5 @@ else:
         "Qualidade da Água • filtro: NDVI ≤ 0.5 (remove macrófitas). "
         "Pixels zerados ocultos. NDWI exibido apenas para diagnóstico."
     )
+
 
