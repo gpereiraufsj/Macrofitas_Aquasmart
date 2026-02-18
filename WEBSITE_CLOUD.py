@@ -107,13 +107,14 @@ def normalize_to_uint8_diag(a, vmin=None, vmax=None):
     """Para NDVI/NDWI (diagnóstico) — autoescala robusta por percentis."""
     a = np.asarray(a, dtype="float32")
     valid = np.isfinite(a)
+
     if not np.any(valid):
         return np.zeros_like(a, dtype=np.uint8), 0.0, 1.0
 
     if vmin is None:
-        vmin = float(np.nanpercentile(a[valid], 2))
+        vmin = float(np.nanpercentile(a, 2))
     if vmax is None:
-        vmax = float(np.nanpercentile(a[valid], 98))
+        vmax = float(np.nanpercentile(a, 98))
     if vmax <= vmin:
         vmax = vmin + 1e-6
 
@@ -133,7 +134,7 @@ def colormap_rgba(uint8_img, cmap_name="viridis"):
 
 def make_colorbar_image(vmin: float, vmax: float, cmap_name: str, label: str = "") -> Image.Image:
     """Gera uma colorbar (PNG) como PIL Image para exibir no Streamlit."""
-    fig, ax = plt.subplots(figsize=(5.4, 0.7))
+    fig, ax = plt.subplots(figsize=(5.2, 0.7))
     fig.subplots_adjust(bottom=0.35, left=0.08, right=0.98, top=0.95)
 
     norm = Normalize(vmin=vmin, vmax=vmax)
@@ -343,59 +344,34 @@ else:
         "secchi":      {"label": "Secchi",      "unit": "cm",   "vmin": 20.0, "vmax": 100.0},
     }
 
-    def robust_scale_to_range(proxy, vmin_out, vmax_out, scale_mask):
-        """
-        Reescala robusta usando percentis (p2–p98) APENAS nos pixels válidos (scale_mask).
-        Isso evita colapsar a escala quando há muita área inválida/macrófita/no-data.
-        """
-        proxy = np.asarray(proxy, dtype="float32")
-        valid = np.isfinite(proxy) & scale_mask
-
-        if not np.any(valid):
+    def robust_scale_to_range(proxy, vmin_out, vmax_out):
+        p2 = np.nanpercentile(proxy, 2)
+        p98 = np.nanpercentile(proxy, 98)
+        if not np.isfinite(p2) or not np.isfinite(p98) or p98 <= p2:
             return np.full_like(proxy, np.nan, dtype="float32")
-
-        p2 = float(np.nanpercentile(proxy[valid], 2))
-        p98 = float(np.nanpercentile(proxy[valid], 98))
-
-        if (not np.isfinite(p2)) or (not np.isfinite(p98)) or (p98 <= p2):
-            return np.full_like(proxy, np.nan, dtype="float32")
-
         proxy01 = (proxy - p2) / (p98 - p2 + EPS)
-        proxy01 = np.clip(proxy01, 0.0, 1.0)
-        out = (vmin_out + proxy01 * (vmax_out - vmin_out)).astype("float32")
-        return out
+        proxy01 = np.clip(proxy01, 0, 1)
+        return (vmin_out + proxy01 * (vmax_out - vmin_out)).astype("float32")
 
-    def compute_water_variable_scaled(B, G, R, NIR, var_key: str, scale_mask):
-        """
-        Cada variável com seu proxy (eventualmente com transformação) e reescala robusta
-        para a faixa física fixa (vmin/vmax).
-        """
+    def compute_water_variable_scaled(B, G, R, NIR, var_key: str):
         spec = VAR_SPECS[var_key]
         vmin, vmax = float(spec["vmin"]), float(spec["vmax"])
 
         if var_key == "chlor_a":
             proxy = (NIR / (R + EPS))
-            out = robust_scale_to_range(proxy, vmin, vmax, scale_mask)
-            return np.clip(out, vmin, vmax).astype("float32")
+            return robust_scale_to_range(proxy, vmin, vmax)
 
         if var_key == "phycocyanin":
             proxy = (R / (G + EPS))
-            out = robust_scale_to_range(proxy, vmin, vmax, scale_mask)
-            return np.clip(out, vmin, vmax).astype("float32")
+            return robust_scale_to_range(proxy, vmin, vmax)
 
         if var_key == "turbidity":
-            # turbidez costuma saturar; log1p melhora contraste sem explodir topo
             proxy = R / (B + G + EPS)
-            proxy = np.log1p(np.clip(proxy, 0, None))
-            out = robust_scale_to_range(proxy, vmin, vmax, scale_mask)
-            return np.clip(out, vmin, vmax).astype("float32")
+            return robust_scale_to_range(proxy, vmin, vmax)
 
         if var_key == "secchi":
-            # secchi derivado da turbidez (inverso); usa o MESMO proxy da turbidez (log1p)
             proxy_turb = R / (B + G + EPS)
-            proxy_turb = np.log1p(np.clip(proxy_turb, 0, None))
-
-            turb_nt = robust_scale_to_range(proxy_turb, 2.5, 20.0, scale_mask)  # NTU
+            turb_nt = robust_scale_to_range(proxy_turb, 2.5, 20.0)  # NTU
             sec01 = (turb_nt - 2.5) / (20.0 - 2.5 + EPS)
             out = 100.0 - np.clip(sec01, 0, 1) * (100.0 - 20.0)
             return np.clip(out, vmin, vmax).astype("float32")
@@ -415,13 +391,10 @@ else:
             ndvi = compute_ndvi(R, NIR)
             ndwi = compute_ndwi(G, NIR)
 
-            # no-data como 0
             zero_mask = (B == 0) & (G == 0) & (R == 0) & (NIR == 0)
-
-            # máscara de pixels VÁLIDOS para calibrar percentis (ESSENCIAL!)
             valid_mask = np.isfinite(ndvi) & (ndvi <= NDVI_MACROFITAS_THR) & (~zero_mask)
 
-            var_scaled = compute_water_variable_scaled(B, G, R, NIR, var_key, scale_mask=valid_mask)
+            var_scaled = compute_water_variable_scaled(B, G, R, NIR, var_key)
             var_filt = np.where(valid_mask, var_scaled, np.nan)
 
             meta = {
@@ -432,9 +405,6 @@ else:
             }
             return var_filt, ndvi, ndwi, meta
 
-    # ----------------------------
-    # Arquivos
-    # ----------------------------
     water_files = list_water_files(base_path)
     if not water_files:
         st.warning("Nenhum arquivo encontrado com padrão DATA_*.tif na raiz do repositório.")
@@ -449,9 +419,6 @@ else:
         "Secchi": "secchi",
     }
 
-    # ----------------------------
-    # Controles
-    # ----------------------------
     c1, c2, c3, c4, c5 = st.columns([1.4, 1.5, 1.0, 1.3, 1.2])
     with c1:
         var_label = st.selectbox("Variável:", list(var_map.keys()), index=0)
@@ -464,7 +431,7 @@ else:
     with c5:
         show_point_clim = st.checkbox("Climatologia mensal do ponto", value=True)
 
-    gamma = st.slider("Contraste (gamma)", 0.40, 2.00, 0.85, 0.05)
+    gamma = st.slider("Contraste do mapa (gamma)", 0.40, 2.00, 0.85, 0.05)
     use_internal_stretch = st.checkbox("Aumentar contraste (p2–p98 dentro da escala fixa)", value=True)
 
     var_key = var_map[var_label]
@@ -473,30 +440,29 @@ else:
     unit = spec["unit"]
     label_unit = f"{spec['label']} ({unit})"
 
-    # ----------------------------
-    # Carrega data selecionada (diagnóstico e referência)
-    # ----------------------------
     tif_path = base_path / f"DATA_{selected_date}.tif"
+
     try:
         var_A, ndvi_A, ndwi_A, meta_A = compute_filtered_var_and_indices(tif_path, var_key)
     except Exception as e:
         st.error(f"Erro ao processar {tif_path.name}: {e}")
         st.stop()
 
-    # ----------------------------
-    # Mapa médio: por variável (cacheado por var_key)
-    # ----------------------------
     @st.cache_data(show_spinner=True)
-    def compute_mean_raster(_var_key: str):
+    def compute_mean_raster(_var_key: str, _vmin: float, _vmax: float):
         sum_arr = None
         cnt_arr = None
         meta_ref = None
 
         for p in water_files:
             var_f, _, _, meta = compute_filtered_var_and_indices(p, _var_key)
+
+            var_f = np.where(
+                np.isfinite(var_f) & (var_f >= _vmin) & (var_f <= _vmax),
+                var_f,
+                np.nan
+            )
             valid = np.isfinite(var_f)
-            if not np.any(valid):
-                continue
 
             if sum_arr is None:
                 sum_arr = np.zeros_like(var_f, dtype=np.float64)
@@ -509,28 +475,19 @@ else:
             sum_arr[valid] += var_f[valid].astype(np.float64)
             cnt_arr[valid] += 1
 
-        if sum_arr is None:
-            return None, None, None
-
         mean_arr = np.full_like(sum_arr, np.nan, dtype=np.float32)
         ok = cnt_arr > 0
         mean_arr[ok] = (sum_arr[ok] / cnt_arr[ok]).astype(np.float32)
         return mean_arr, meta_ref, cnt_arr
 
     if use_mean_map:
-        map_arr, meta_use, cnt_arr = compute_mean_raster(var_key)
-        if map_arr is None:
-            st.warning("Não foi possível calcular o mapa médio (sem pixels válidos em todas as datas).")
-            st.stop()
+        map_arr, meta_use, _ = compute_mean_raster(var_key, vmin_fixed, vmax_fixed)
         map_title = f"{label_unit} • MÉDIA (todas as datas)"
     else:
         map_arr = var_A
         meta_use = meta_A
         map_title = f"{label_unit} • {selected_date}"
 
-    # ----------------------------
-    # Estatística espacial
-    # ----------------------------
     vals = map_arr[np.isfinite(map_arr)]
     if vals.size == 0:
         st.warning("Não sobraram pixels válidos após filtro NDVI e remoção de zeros.")
@@ -550,18 +507,9 @@ else:
     s3.metric("Mediana", f"{stats['mediana']:.2f} {unit}")
     s4.metric("p10–p90", f"{stats['p10']:.2f} – {stats['p90']:.2f} {unit}")
 
-    # ----------------------------
-    # Visualização: escala fixa + (opcional) contraste interno
-    # ----------------------------
-    inrange_fixed = np.isfinite(map_arr) & (map_arr >= vmin_fixed) & (map_arr <= vmax_fixed)
-    vals_inrange = map_arr[inrange_fixed]
-    if vals_inrange.size == 0:
-        st.warning("Pixels válidos existem, mas nenhum cai dentro da escala fixa. Ajuste vmin/vmax.")
-        st.stop()
-
     if use_internal_stretch:
-        p2 = float(np.nanpercentile(vals_inrange, 2))
-        p98 = float(np.nanpercentile(vals_inrange, 98))
+        p2 = float(np.nanpercentile(vals, 2))
+        p98 = float(np.nanpercentile(vals, 98))
         vmin_vis = max(vmin_fixed, p2)
         vmax_vis = min(vmax_fixed, p98)
         if vmax_vis <= vmin_vis:
@@ -569,11 +517,9 @@ else:
     else:
         vmin_vis, vmax_vis = vmin_fixed, vmax_fixed
 
-    # ----------------------------
-    # Mapa
-    # ----------------------------
     st.markdown("### 🗺️ Mapa interativo (escala fixa + contraste)")
 
+    inrange_fixed = np.isfinite(map_arr) & (map_arr >= vmin_fixed) & (map_arr <= vmax_fixed)
     norm = np.zeros_like(map_arr, dtype=np.float32)
     norm[inrange_fixed] = (map_arr[inrange_fixed] - vmin_vis) / (vmax_vis - vmin_vis + EPS)
     norm[inrange_fixed] = np.clip(norm[inrange_fixed], 0, 1)
@@ -600,35 +546,24 @@ else:
     ).add_to(m)
     m.fit_bounds(folium_bounds)
 
-    # Legenda dinâmica (muda com gamma e com vmin_vis/vmax_vis)
     legend_html = f"""
     <div style="
-        position: fixed; bottom: 30px; left: 30px; width: 560px; z-index: 9999;
+        position: fixed; bottom: 30px; left: 30px; width: 520px; z-index: 9999;
         background-color: white; padding: 10px; border: 1px solid #999; border-radius: 6px;
         font-size: 12px;">
         <b>{map_title}</b><br/>
-        <b>Escala fixa (científica):</b> [{vmin_fixed:.2f}, {vmax_fixed:.2f}] {unit}<br/>
-        <b>Escala visual (contraste):</b> [{vmin_vis:.2f}, {vmax_vis:.2f}] {unit}
-        {"(p2–p98 dentro da fixa)" if use_internal_stretch else "(igual à fixa)"}<br/>
-        <b>Gamma:</b> {gamma:.2f} • <b>Colormap:</b> {cmap_name}<br/>
-        <b>Filtro:</b> NDVI ≤ {NDVI_MACROFITAS_THR:.2f} (remove macrófitas) • pixels zerados: ocultos
+        escala fixa: [{vmin_fixed:.2f}, {vmax_fixed:.2f}] {unit}<br/>
+        contraste (visual): [{vmin_vis:.2f}, {vmax_vis:.2f}] {unit} {'(p2–p98 dentro da escala fixa)' if use_internal_stretch else '(igual à escala fixa)'}<br/>
+        filtro: NDVI ≤ {NDVI_MACROFITAS_THR:.2f} (remove macrófitas) • pixels zerados: ocultos<br/>
+        colormap: {cmap_name} • gamma: {gamma:.2f}
     </div>
     """
     m.get_root().html.add_child(folium.Element(legend_html))
 
     click = st_folium(m, width=1200, height=700)
 
-    # Colorbars: fixa (comparabilidade) e visual (acompanha contraste)
-    st.markdown("#### 🎛️ Legenda de cores")
-    cb1, cb2 = st.columns(2)
-    with cb1:
-        st.caption("Escala fixa (científica)")
-        cb_img_fixed = make_colorbar_image(vmin=vmin_fixed, vmax=vmax_fixed, cmap_name=cmap_name, label=label_unit)
-        st.image(cb_img_fixed, use_column_width=False)
-    with cb2:
-        st.caption("Escala visual (contraste aplicado)")
-        cb_img_vis = make_colorbar_image(vmin=vmin_vis, vmax=vmax_vis, cmap_name=cmap_name, label=label_unit)
-        st.image(cb_img_vis, use_column_width=False)
+    cb_img = make_colorbar_image(vmin=vmin_fixed, vmax=vmax_fixed, cmap_name=cmap_name, label=label_unit)
+    st.image(cb_img, use_column_width=False)
 
     st.markdown("---")
     st.markdown("### 📈 Série temporal no ponto clicado")
