@@ -344,7 +344,7 @@ else:
         "secchi":      {"label": "Secchi",      "unit": "cm",   "vmin": 20.0, "vmax": 100.0},
     }
 
-     def robust_scale_to_range(proxy, vmin_out, vmax_out, scale_mask):
+    def robust_scale_to_range(proxy, vmin_out, vmax_out, scale_mask):
         """
         Escala robusta p2–p98 usando APENAS pixels de scale_mask=True.
         Mantém NaN fora do scale_mask.
@@ -661,6 +661,7 @@ else:
         "Qualidade da Água • filtro: NDVI ≤ 0.5 (remove macrófitas). "
         "Pixels zerados ocultos. NDWI exibido apenas para diagnóstico."
     )
+
 
 
 
