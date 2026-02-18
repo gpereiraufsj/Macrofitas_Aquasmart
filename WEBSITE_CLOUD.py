@@ -429,7 +429,7 @@ else:
                 np.isfinite(ndvi) &
                 (ndvi <= NDVI_MACROFITAS_THR)
             )
-            st.write("valid_mask pixels:", int(np.sum(valid_mask)))
+            
             # compute variável já usando valid_mask na escala
             var_scaled = compute_water_variable_scaled(B, G, R, NIR, var_key, valid_mask)
             var_filt = var_scaled  # já vem NaN fora da máscara
@@ -694,6 +694,7 @@ else:
         "Qualidade da Água • filtro: NDVI ≤ 0.5 (remove macrófitas). "
         "Pixels zerados ocultos. NDWI exibido apenas para diagnóstico."
     )
+
 
 
 
