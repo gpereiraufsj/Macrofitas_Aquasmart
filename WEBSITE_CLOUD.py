@@ -112,17 +112,15 @@ def normalize_to_uint8_diag(a, vmin=None, vmax=None):
         return np.zeros_like(a, dtype=np.uint8), 0.0, 1.0
 
     if vmin is None:
-        vmin = float(np.nanpercentile(a[valid], 2))
+        vmin = float(np.nanpercentile(a, 2))
     if vmax is None:
-        vmax = float(np.nanpercentile(a[valid], 98))
+        vmax = float(np.nanpercentile(a, 98))
     if vmax <= vmin:
         vmax = vmin + 1e-6
 
     x = (a - vmin) / (vmax - vmin)
     x = np.clip(x, 0, 1)
-    out = np.zeros_like(a, dtype=np.uint8)
-    out[valid] = (x[valid] * 255).astype(np.uint8)
-    return out, vmin, vmax
+    return (x * 255).astype(np.uint8), vmin, vmax
 
 
 def colormap_rgba(uint8_img, cmap_name="viridis"):
@@ -326,6 +324,7 @@ if pagina == "🌿 Macrófitas":
     st.markdown("---")
     st.caption("Versão científica interativa • Desenvolvido com 💚 para o Projeto AQUASMART")
 
+
 # =====================================================================
 # PÁGINA 2 — QUALIDADE DA ÁGUA
 # =====================================================================
@@ -345,66 +344,67 @@ else:
         "secchi":      {"label": "Secchi",      "unit": "cm",   "vmin": 20.0, "vmax": 100.0},
     }
 
-   def robust_scale_to_range(proxy, vmin_out, vmax_out, scale_mask=None):
-        """
-        Reescala proxy -> [vmin_out, vmax_out] usando percentis robustos (2–98),
-        mas calculando os percentis apenas onde scale_mask=True (ex.: ~zero_mask).
-        """
+    # -----------------------------------------------------------------
+    # ROBUST SCALE (CORREÇÃO-CHAVE):
+    # percentis calculados só em pixels com dado (scale_mask=True),
+    # evitando colapsar em 0 (no-data) e sumir no mapa médio.
+    # -----------------------------------------------------------------
+    def robust_scale_to_range(proxy, vmin_out, vmax_out, scale_mask=None):
         proxy = np.asarray(proxy, dtype="float32")
-    
+
         if scale_mask is None:
             valid = np.isfinite(proxy)
         else:
             valid = np.isfinite(proxy) & scale_mask
-    
+
         if not np.any(valid):
             return np.full_like(proxy, np.nan, dtype="float32")
-    
+
         p2 = float(np.nanpercentile(proxy[valid], 2))
         p98 = float(np.nanpercentile(proxy[valid], 98))
-    
+
         if (not np.isfinite(p2)) or (not np.isfinite(p98)) or (p98 <= p2):
             return np.full_like(proxy, np.nan, dtype="float32")
-    
+
         proxy01 = (proxy - p2) / (p98 - p2 + EPS)
         proxy01 = np.clip(proxy01, 0.0, 1.0)
-    
+
         out = (vmin_out + proxy01 * (vmax_out - vmin_out)).astype("float32")
         return out
-           
+
+    # -----------------------------------------------------------------
+    # Variáveis (proxy + reescala fixa)
+    # turbidez: log1p melhora saturação no topo
+    # -----------------------------------------------------------------
     def compute_water_variable_scaled(B, G, R, NIR, var_key: str, scale_mask=None):
-    spec = VAR_SPECS[var_key]
-    vmin, vmax = float(spec["vmin"]), float(spec["vmax"])
+        spec = VAR_SPECS[var_key]
+        vmin, vmax = float(spec["vmin"]), float(spec["vmax"])
 
-    if var_key == "chlor_a":
-        proxy = (NIR / (R + EPS))
-        out = robust_scale_to_range(proxy, vmin, vmax, scale_mask=scale_mask)
-        return np.clip(out, vmin, vmax).astype("float32")
+        if var_key == "chlor_a":
+            proxy = (NIR / (R + EPS))
+            out = robust_scale_to_range(proxy, vmin, vmax, scale_mask=scale_mask)
+            return np.clip(out, vmin, vmax).astype("float32")
 
-    if var_key == "phycocyanin":
-        proxy = (R / (G + EPS))
-        out = robust_scale_to_range(proxy, vmin, vmax, scale_mask=scale_mask)
-        return np.clip(out, vmin, vmax).astype("float32")
+        if var_key == "phycocyanin":
+            proxy = (R / (G + EPS))
+            out = robust_scale_to_range(proxy, vmin, vmax, scale_mask=scale_mask)
+            return np.clip(out, vmin, vmax).astype("float32")
 
-    if var_key == "turbidity":
-        proxy = R / (B + G + EPS)
+        if var_key == "turbidity":
+            proxy = R / (B + G + EPS)
+            proxy = np.log1p(np.clip(proxy, 0, None))  # <- ajuda MUITO
+            out = robust_scale_to_range(proxy, vmin, vmax, scale_mask=scale_mask)
+            return np.clip(out, vmin, vmax).astype("float32")
 
-        # (opcional, mas ajuda MUITO a não saturar no topo)
-        proxy = np.log1p(np.clip(proxy, 0, None))
+        if var_key == "secchi":
+            proxy_turb = R / (B + G + EPS)
+            proxy_turb = np.log1p(np.clip(proxy_turb, 0, None))
+            turb_nt = robust_scale_to_range(proxy_turb, 2.5, 20.0, scale_mask=scale_mask)  # NTU
+            sec01 = (turb_nt - 2.5) / (20.0 - 2.5 + EPS)
+            out = 100.0 - np.clip(sec01, 0, 1) * (100.0 - 20.0)
+            return np.clip(out, vmin, vmax).astype("float32")
 
-        out = robust_scale_to_range(proxy, vmin, vmax, scale_mask=scale_mask)
-        return np.clip(out, vmin, vmax).astype("float32")
-
-    if var_key == "secchi":
-        proxy_turb = R / (B + G + EPS)
-        proxy_turb = np.log1p(np.clip(proxy_turb, 0, None))
-
-        turb_nt = robust_scale_to_range(proxy_turb, 2.5, 20.0, scale_mask=scale_mask)  # NTU
-        sec01 = (turb_nt - 2.5) / (20.0 - 2.5 + EPS)
-        out = 100.0 - np.clip(sec01, 0, 1) * (100.0 - 20.0)
-        return np.clip(out, vmin, vmax).astype("float32")
-
-    raise ValueError("Variável desconhecida.")
+        raise ValueError("Variável desconhecida.")
 
     def compute_filtered_var_and_indices(tif_file: pathlib.Path, var_key: str):
         with rasterio.open(tif_file) as src:
@@ -419,23 +419,16 @@ else:
             ndvi = compute_ndvi(R, NIR)
             ndwi = compute_ndwi(G, NIR)
 
-            # máscara de pixels zerados (sem dado)
+            # pixels “sem dado” (no-data como 0)
             zero_mask = (B == 0) & (G == 0) & (R == 0) & (NIR == 0)
 
-            # manter: NDVI <= thr e não-zero
+            # máscara para definir os percentis: só onde NÃO é no-data
+            scale_mask = (~zero_mask)
+
+            # filtro final (mostra só: não-macrófita e não-no-data)
             valid_mask = np.isfinite(ndvi) & (ndvi <= NDVI_MACROFITAS_THR) & (~zero_mask)
 
-            scale_mask = (~zero_mask)  # percentis só onde não é no-data
             var_scaled = compute_water_variable_scaled(B, G, R, NIR, var_key, scale_mask=scale_mask)
-            
-            spec = VAR_SPECS[var_key]
-            vmin_fixed = float(spec["vmin"])
-            vmax_fixed = float(spec["vmax"])
-
-            var_scaled = np.clip(var_scaled, vmin_fixed, vmax_fixed)
-            var_filt = np.where(valid_mask, var_scaled, np.nan)
-            
-            
             var_filt = np.where(valid_mask, var_scaled, np.nan)
 
             meta = {
@@ -446,6 +439,9 @@ else:
             }
             return var_filt, ndvi, ndwi, meta
 
+    # ----------------------------
+    # arquivos
+    # ----------------------------
     water_files = list_water_files(base_path)
     if not water_files:
         st.warning("Nenhum arquivo encontrado com padrão DATA_*.tif na raiz do repositório.")
@@ -460,6 +456,9 @@ else:
         "Secchi": "secchi",
     }
 
+    # ----------------------------
+    # controles
+    # ----------------------------
     c1, c2, c3, c4, c5 = st.columns([1.4, 1.5, 1.0, 1.3, 1.2])
     with c1:
         var_label = st.selectbox("Variável:", list(var_map.keys()), index=0)
@@ -481,22 +480,23 @@ else:
     unit = spec["unit"]
     label_unit = f"{spec['label']} ({unit})"
 
+    # ----------------------------
+    # carrega data selecionada (para NDVI/NDWI diagnóstico e fallback de meta)
+    # ----------------------------
     tif_path = base_path / f"DATA_{selected_date}.tif"
-
     try:
         var_A, ndvi_A, ndwi_A, meta_A = compute_filtered_var_and_indices(tif_path, var_key)
     except Exception as e:
         st.error(f"Erro ao processar {tif_path.name}: {e}")
         st.stop()
 
+    # ----------------------------
+    # mapa médio (média pixel-a-pixel) — robusto
+    # IMPORTANTÍSSIMO: NÃO filtrar por escala antes de acumular, só filtrar por finite.
+    # (o filtro de escala fica para visualização)
+    # ----------------------------
     @st.cache_data(show_spinner=True)
-    def compute_mean_raster(_var_key: str, _vmin: float, _vmax: float):
-        """
-        Média pixel-a-pixel robusta:
-        - só inicializa arrays quando encontrar a PRIMEIRA cena com pixels válidos
-        - ignora cenas sem pixels válidos (evita "sum/cnt" zerados)
-        - ignora shapes diferentes (ou teria que reamostrar)
-        """
+    def compute_mean_raster(_var_key: str):
         sum_arr = None
         cnt_arr = None
         meta_ref = None
@@ -504,24 +504,17 @@ else:
         for p in water_files:
             var_f, _, _, meta = compute_filtered_var_and_indices(p, _var_key)
 
-            var_f = np.where(
-                np.isfinite(var_f) & (var_f >= _vmin) & (var_f <= _vmax),
-                var_f,
-                np.nan
-            )
             valid = np.isfinite(var_f)
-
-            # se cena vazia, pula
             if not np.any(valid):
                 continue
 
-            # inicializa com a primeira cena realmente válida
             if sum_arr is None:
                 sum_arr = np.zeros_like(var_f, dtype=np.float64)
                 cnt_arr = np.zeros_like(var_f, dtype=np.uint32)
                 meta_ref = meta
 
             if var_f.shape != sum_arr.shape:
+                # se tiver algum TIFF diferente, ignora
                 continue
 
             sum_arr[valid] += var_f[valid].astype(np.float64)
@@ -537,9 +530,9 @@ else:
         return mean_arr, meta_ref, cnt_arr
 
     if use_mean_map:
-        map_arr, meta_use, _ = compute_mean_raster(var_key, vmin_fixed, vmax_fixed)
+        map_arr, meta_use, cnt_arr = compute_mean_raster(var_key)
         if map_arr is None:
-            st.warning("Mapa médio: nenhuma data teve pixels válidos para esta variável (após filtro NDVI + zeros).")
+            st.warning("Não foi possível calcular o mapa médio (todas as datas sem pixels válidos).")
             st.stop()
         map_title = f"{label_unit} • MÉDIA (todas as datas)"
     else:
@@ -547,6 +540,9 @@ else:
         meta_use = meta_A
         map_title = f"{label_unit} • {selected_date}"
 
+    # ----------------------------
+    # estatística espacial (após filtros já aplicados)
+    # ----------------------------
     vals = map_arr[np.isfinite(map_arr)]
     if vals.size == 0:
         st.warning("Não sobraram pixels válidos após filtro NDVI e remoção de zeros.")
@@ -566,9 +562,19 @@ else:
     s3.metric("Mediana", f"{stats['mediana']:.2f} {unit}")
     s4.metric("p10–p90", f"{stats['p10']:.2f} – {stats['p90']:.2f} {unit}")
 
+    # ----------------------------
+    # visualização: escala fixa (científica) + contraste interno (opcional)
+    # ----------------------------
+    inrange_fixed = np.isfinite(map_arr) & (map_arr >= vmin_fixed) & (map_arr <= vmax_fixed)
+    vals_inrange = map_arr[inrange_fixed]
+
+    if vals_inrange.size == 0:
+        st.warning("Pixels válidos existem, mas nenhum cai dentro da escala fixa. Ajuste a escala ou o cálculo.")
+        st.stop()
+
     if use_internal_stretch:
-        p2 = float(np.nanpercentile(vals, 2))
-        p98 = float(np.nanpercentile(vals, 98))
+        p2 = float(np.nanpercentile(vals_inrange, 2))
+        p98 = float(np.nanpercentile(vals_inrange, 98))
         vmin_vis = max(vmin_fixed, p2)
         vmax_vis = min(vmax_fixed, p98)
         if vmax_vis <= vmin_vis:
@@ -578,7 +584,6 @@ else:
 
     st.markdown("### 🗺️ Mapa interativo (escala fixa + contraste)")
 
-    inrange_fixed = np.isfinite(map_arr) & (map_arr >= vmin_fixed) & (map_arr <= vmax_fixed)
     norm = np.zeros_like(map_arr, dtype=np.float32)
     norm[inrange_fixed] = (map_arr[inrange_fixed] - vmin_vis) / (vmax_vis - vmin_vis + EPS)
     norm[inrange_fixed] = np.clip(norm[inrange_fixed], 0, 1)
@@ -699,8 +704,3 @@ else:
         "Qualidade da Água • filtro: NDVI ≤ 0.5 (remove macrófitas). "
         "Pixels zerados ocultos. NDWI exibido apenas para diagnóstico."
     )
-
-
-
-
-
