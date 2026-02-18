@@ -413,11 +413,27 @@ else:
             ndvi = compute_ndvi(R, NIR)
             ndwi = compute_ndwi(G, NIR)
 
-            zero_mask = (B == 0) & (G == 0) & (R == 0) & (NIR == 0)
-            valid_mask = np.isfinite(ndvi) & (ndvi <= NDVI_MACROFITAS_THR) & (~zero_mask)
+            # 1) máscara nodata oficial do raster
+            # dataset_mask: 0 = nodata, 255 = válido (em geral)
+            ds_mask = src.dataset_mask()
+            nodata_mask = (ds_mask == 0)
 
+            # 2) remova pixels “problemáticos” (qualquer banda zero)
+            # (isso resolve MUITO para turbidez e fitocianina)
+            any_zero = (B == 0) | (G == 0) | (R == 0) | (NIR == 0)
+
+            # 3) máscara final de validade
+            valid_mask = (
+                (~nodata_mask) &
+                (~any_zero) &
+                np.isfinite(ndvi) &
+                (ndvi <= NDVI_MACROFITAS_THR)
+            )
+
+            # compute variável já usando valid_mask na escala
             var_scaled = compute_water_variable_scaled(B, G, R, NIR, var_key, valid_mask)
-            var_filt = var_scaled  # já vem com NaN fora do valid_mask
+            var_filt = var_scaled  # já vem NaN fora da máscara
+
             meta = {
                 "crs": src.crs,
                 "transform": src.transform,
@@ -661,6 +677,7 @@ else:
         "Qualidade da Água • filtro: NDVI ≤ 0.5 (remove macrófitas). "
         "Pixels zerados ocultos. NDWI exibido apenas para diagnóstico."
     )
+
 
 
 
