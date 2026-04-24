@@ -47,7 +47,7 @@ with st.sidebar:
 
     pagina = st.radio(
         "Navegação",
-        ["🌿 Macrófitas", "💧 Qualidade da Água"],
+        ["🌿 Macrófitas V2", "💧 Qualidade da Água"],
         index=0
     )
 
