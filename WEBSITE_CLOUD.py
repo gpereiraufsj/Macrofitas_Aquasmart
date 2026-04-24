@@ -5,9 +5,11 @@ import streamlit as st
 import rasterio
 import folium
 import os
+import re
 import numpy as np
 import pandas as pd
 from rasterio.transform import rowcol
+from rasterio.warp import reproject, Resampling
 from streamlit_folium import st_folium
 import plotly.express as px
 import plotly.graph_objects as go
@@ -15,7 +17,7 @@ from folium import raster_layers
 from PIL import Image
 import pathlib
 
-from pyproj import Transformer
+from pyproj import Transformer, Geod
 import matplotlib.cm as cm
 import matplotlib.pyplot as plt
 from matplotlib.colors import Normalize
@@ -53,6 +55,7 @@ with st.sidebar:
             "🌿 Macrófitas",
             "💧 Qualidade da Água",
             "🌎 Uso do Solo & Água",
+            "🛰️ Mudanças MapBiomas",
             "🧱 Sedimentos & Risco",
         ],
         index=0
@@ -62,7 +65,7 @@ with st.sidebar:
 # HEADER
 # =====================================================================
 st.markdown("# AQUASMART • Dashboard Científico")
-st.caption("Macrófitas • Qualidade da Água • Uso do solo e qualidade da água in situ • Síntese integrada • Sedimentos e risco ambiental")
+st.caption("Macrófitas • Qualidade da Água • Uso do solo • Mudanças MapBiomas • Síntese integrada • Sedimentos e risco ambiental")
 st.markdown("---")
 
 # =====================================================================
@@ -942,6 +945,557 @@ def page_sedimentos_risco():
 
 
 
+# =====================================================================
+# MÓDULO MAPBIOMAS — MUDANÇAS DE USO E COBERTURA DO SOLO
+# =====================================================================
+MAPBIOMAS_CLASSES = {
+    1: "Floresta", 3: "Formação florestal", 4: "Formação savânica", 5: "Mangue",
+    6: "Floresta alagável", 49: "Restinga arborizada",
+    10: "Formação natural não florestal", 11: "Campo alagado e área pantanosa",
+    12: "Formação campestre", 13: "Outra formação natural não florestal", 29: "Afloramento rochoso",
+    32: "Apicum", 50: "Restinga herbácea",
+    14: "Agropecuária", 15: "Pastagem", 18: "Agricultura", 19: "Lavoura temporária",
+    20: "Cana", 35: "Dendê", 36: "Lavoura perene", 39: "Soja", 40: "Arroz",
+    41: "Outras lavouras temporárias", 46: "Café", 47: "Citrus", 48: "Outras lavouras perenes",
+    62: "Algodão", 9: "Silvicultura", 21: "Mosaico de usos",
+    22: "Área não vegetada", 23: "Praia, duna ou areal", 24: "Área urbanizada",
+    25: "Outra área não vegetada", 30: "Mineração",
+    26: "Corpo d’água", 31: "Aquicultura", 33: "Rio, lago e oceano",
+    27: "Não observado",
+}
+
+MAPBIOMAS_PALETTE = {
+    1: "#1f8d49", 3: "#1f8d49", 4: "#7dc975", 5: "#04381d", 6: "#007785", 49: "#02d659",
+    10: "#d6bc74", 11: "#519799", 12: "#d6bc74", 13: "#d89f5c", 29: "#ffaa5f",
+    32: "#fc8114", 50: "#ad5100",
+    14: "#ffefc3", 15: "#edde8e", 18: "#e974ed", 19: "#c27ba0", 20: "#db7093",
+    35: "#9065d0", 36: "#d082de", 39: "#f5b3c8", 40: "#c71585", 41: "#f54ca9",
+    46: "#d68fe2", 47: "#9932cc", 48: "#e6ccff", 62: "#ff69b4", 9: "#7a5900",
+    21: "#ffefc3", 22: "#d4271e", 23: "#ffa07a", 24: "#d4271e", 25: "#db4d4f",
+    30: "#9c0027", 26: "#2532e4", 31: "#091077", 33: "#2532e4", 27: "#ffffff",
+}
+
+MAPBIOMAS_GROUPS = {
+    "Formações naturais": {1, 3, 4, 5, 6, 10, 11, 12, 13, 29, 32, 49, 50},
+    "Agropecuária e silvicultura": {9, 14, 15, 18, 19, 20, 21, 35, 36, 39, 40, 41, 46, 47, 48, 62},
+    "Áreas construídas ou expostas": {22, 23, 24, 25, 30},
+    "Água": {26, 31, 33},
+    "Não observado": {0, 27},
+}
+
+MAPBIOMAS_GROUP_COLORS = {
+    "Formações naturais": "#1f8d49",
+    "Agropecuária e silvicultura": "#ffefc3",
+    "Áreas construídas ou expostas": "#d4271e",
+    "Água": "#2532e4",
+    "Não observado": "#ffffff",
+}
+
+CHANGE_CLASSES = {
+    1: ("Estável", "#d9d9d9"),
+    2: ("Recuperação de formações naturais", "#1f8d49"),
+    3: ("Conversão para agropecuária ou silvicultura", "#ffefc3"),
+    4: ("Conversão para área construída, exposta ou mineração", "#d4271e"),
+    5: ("Ganho de água", "#2532e4"),
+    6: ("Perda de água", "#ffaa5f"),
+    7: ("Troca interna entre formações naturais", "#7dc975"),
+    8: ("Outras mudanças", "#8c8c8c"),
+}
+
+
+def hex_to_rgb(hex_color: str):
+    hex_color = hex_color.strip().lstrip("#")
+    return tuple(int(hex_color[i:i + 2], 16) for i in (0, 2, 4))
+
+
+def find_mapbiomas_files(folder: pathlib.Path):
+    """Localiza arquivos regap_coverage_YYYY.tif ou .tiff no diretório raiz do app."""
+    items = []
+    pattern = re.compile(r"^regap_coverage_(\d{4})\.tif{1,2}$", re.IGNORECASE)
+    for p in sorted(folder.iterdir()):
+        m = pattern.match(p.name)
+        if m:
+            items.append({"Ano": int(m.group(1)), "Arquivo": p})
+    return sorted(items, key=lambda d: d["Ano"])
+
+
+def mapbiomas_class_name(value: int) -> str:
+    return MAPBIOMAS_CLASSES.get(int(value), f"Classe {int(value)}")
+
+
+def mapbiomas_class_color(value: int) -> str:
+    return MAPBIOMAS_PALETTE.get(int(value), "#bdbdbd")
+
+
+def mapbiomas_group(value: int) -> str:
+    value = int(value)
+    for group, codes in MAPBIOMAS_GROUPS.items():
+        if value in codes:
+            return group
+    return "Outra classe"
+
+
+def bounds_to_4326(bounds, crs):
+    """Converte os limites do raster para latitude/longitude para uso no Folium."""
+    if crs is None:
+        return [[bounds.bottom, bounds.left], [bounds.top, bounds.right]]
+    epsg = crs.to_epsg() if hasattr(crs, "to_epsg") else None
+    if epsg == 4326:
+        return [[bounds.bottom, bounds.left], [bounds.top, bounds.right]]
+    transformer = Transformer.from_crs(crs, "EPSG:4326", always_xy=True)
+    lon1, lat1 = transformer.transform(bounds.left, bounds.bottom)
+    lon2, lat2 = transformer.transform(bounds.right, bounds.top)
+    south, north = sorted([lat1, lat2])
+    west, east = sorted([lon1, lon2])
+    return [[south, west], [north, east]]
+
+
+def estimate_pixel_area_ha(src) -> float:
+    """Estima área de um pixel em hectares. Para rasters geográficos usa área geodésica no centro da cena."""
+    try:
+        if src.crs and src.crs.is_projected:
+            return abs(src.transform.a * src.transform.e) / 10_000.0
+        if src.crs and src.crs.is_geographic:
+            geod = Geod(ellps="WGS84")
+            cx = (src.bounds.left + src.bounds.right) / 2
+            cy = (src.bounds.bottom + src.bounds.top) / 2
+            dx = abs(src.transform.a)
+            dy = abs(src.transform.e)
+            xs = [cx - dx / 2, cx + dx / 2, cx + dx / 2, cx - dx / 2]
+            ys = [cy - dy / 2, cy - dy / 2, cy + dy / 2, cy + dy / 2]
+            area_m2, _ = geod.polygon_area_perimeter(xs, ys)
+            return abs(area_m2) / 10_000.0
+    except Exception:
+        pass
+    return 0.09  # aproximação para pixel de 30 m × 30 m
+
+
+def read_mapbiomas_array(path: pathlib.Path):
+    with rasterio.open(path) as src:
+        arr = src.read(1)
+        meta = {
+            "crs": src.crs,
+            "transform": src.transform,
+            "bounds": src.bounds,
+            "shape": arr.shape,
+            "nodata": src.nodata,
+            "pixel_area_ha": estimate_pixel_area_ha(src),
+            "folium_bounds": bounds_to_4326(src.bounds, src.crs),
+        }
+    return arr, meta
+
+
+def valid_mapbiomas_mask(arr, nodata=None):
+    mask = np.isfinite(arr)
+    if nodata is not None and np.isfinite(nodata):
+        mask &= arr != nodata
+    mask &= arr != 0
+    return mask
+
+
+def align_mapbiomas_to_reference(path: pathlib.Path, reference_meta: dict):
+    """Reamostra um raster MapBiomas para a grade do raster de referência, usando vizinho mais próximo."""
+    with rasterio.open(path) as src:
+        same_grid = (
+            src.shape == reference_meta["shape"] and
+            src.transform == reference_meta["transform"] and
+            src.crs == reference_meta["crs"]
+        )
+        if same_grid:
+            return src.read(1)
+        dst = np.zeros(reference_meta["shape"], dtype=src.read(1).dtype)
+        reproject(
+            source=rasterio.band(src, 1),
+            destination=dst,
+            src_transform=src.transform,
+            src_crs=src.crs,
+            src_nodata=src.nodata,
+            dst_transform=reference_meta["transform"],
+            dst_crs=reference_meta["crs"],
+            dst_nodata=0,
+            resampling=Resampling.nearest,
+        )
+    return dst
+
+
+def mapbiomas_to_rgba(arr, nodata=None):
+    rgba = np.zeros((arr.shape[0], arr.shape[1], 4), dtype=np.uint8)
+    valid = valid_mapbiomas_mask(arr, nodata)
+    values = np.unique(arr[valid]).astype(int) if np.any(valid) else []
+    for value in values:
+        rgb = hex_to_rgb(mapbiomas_class_color(value))
+        sel = arr == value
+        rgba[sel, 0] = rgb[0]
+        rgba[sel, 1] = rgb[1]
+        rgba[sel, 2] = rgb[2]
+        rgba[sel, 3] = 225
+    return rgba
+
+
+def mapbiomas_legend_html(title: str, items, position: str = "bottom: 30px; right: 30px;"):
+    rows = "".join(
+        f"<div style='display:flex;align-items:center;margin:2px 0;'>"
+        f"<span style='display:inline-block;width:13px;height:13px;background:{color};border:1px solid #555;margin-right:7px;'></span>"
+        f"<span>{label}</span></div>"
+        for color, label in items
+    )
+    return f"""
+    <div style="position: fixed; {position} width: 310px; max-height: 430px; overflow-y: auto; z-index: 9999;
+        background-color: white; padding: 10px; border: 1px solid #999; border-radius: 8px; font-size: 12px;">
+        <b>{title}</b><br/>{rows}
+    </div>
+    """
+
+
+def class_legend_items(arr, nodata=None, max_items=35):
+    valid = valid_mapbiomas_mask(arr, nodata)
+    if not np.any(valid):
+        return []
+    values = sorted([int(v) for v in np.unique(arr[valid])])[:max_items]
+    return [(mapbiomas_class_color(v), f"{v} – {mapbiomas_class_name(v)}") for v in values]
+
+
+def change_map_rgba(old_arr, new_arr, old_nodata=None, new_nodata=None):
+    old_valid = valid_mapbiomas_mask(old_arr, old_nodata)
+    new_valid = valid_mapbiomas_mask(new_arr, new_nodata)
+    valid = old_valid & new_valid
+    out = np.zeros(old_arr.shape, dtype=np.uint8)
+
+    old_group = array_to_group_id(old_arr)
+    new_group = array_to_group_id(new_arr)
+
+    out[valid & (old_arr == new_arr)] = 1
+    out[valid & (old_arr != new_arr)] = 8
+    out[valid & (old_arr != new_arr) & (new_group == 1) & (old_group != 1)] = 2
+    out[valid & (old_arr != new_arr) & (new_group == 2) & (old_group != 2)] = 3
+    out[valid & (old_arr != new_arr) & (new_group == 3) & (old_group != 3)] = 4
+    out[valid & (old_arr != new_arr) & (new_group == 4) & (old_group != 4)] = 5
+    out[valid & (old_arr != new_arr) & (old_group == 4) & (new_group != 4)] = 6
+    out[valid & (old_arr != new_arr) & (old_group == 1) & (new_group == 1)] = 7
+
+    rgba = np.zeros((out.shape[0], out.shape[1], 4), dtype=np.uint8)
+    for code, (_, color) in CHANGE_CLASSES.items():
+        rgb = hex_to_rgb(color)
+        sel = out == code
+        rgba[sel, 0] = rgb[0]
+        rgba[sel, 1] = rgb[1]
+        rgba[sel, 2] = rgb[2]
+        rgba[sel, 3] = 230
+    return out, rgba
+
+
+def array_to_group_id(arr):
+    """Codifica grupos: 1 naturais; 2 agro/silvicultura; 3 construída/exposta; 4 água; 5 não observado; 0 outra."""
+    out = np.zeros(arr.shape, dtype=np.uint8)
+    group_codes = {
+        1: MAPBIOMAS_GROUPS["Formações naturais"],
+        2: MAPBIOMAS_GROUPS["Agropecuária e silvicultura"],
+        3: MAPBIOMAS_GROUPS["Áreas construídas ou expostas"],
+        4: MAPBIOMAS_GROUPS["Água"],
+        5: MAPBIOMAS_GROUPS["Não observado"],
+    }
+    for gid, codes in group_codes.items():
+        out[np.isin(arr, list(codes))] = gid
+    return out
+
+
+def group_id_label(gid: int) -> str:
+    return {
+        1: "Formações naturais",
+        2: "Agropecuária e silvicultura",
+        3: "Áreas construídas ou expostas",
+        4: "Água",
+        5: "Não observado",
+        0: "Outra classe",
+    }.get(int(gid), "Outra classe")
+
+
+@st.cache_data(show_spinner=False)
+def compute_mapbiomas_area_table(file_signature):
+    rows = []
+    for year, path_str, _mtime in file_signature:
+        path = pathlib.Path(path_str)
+        try:
+            with rasterio.open(path) as src:
+                arr = src.read(1)
+                area_ha = estimate_pixel_area_ha(src)
+                nodata = src.nodata
+        except Exception:
+            continue
+        mask = valid_mapbiomas_mask(arr, nodata)
+        if not np.any(mask):
+            continue
+        values, counts = np.unique(arr[mask].astype(int), return_counts=True)
+        total_ha = float(counts.sum() * area_ha)
+        for value, count in zip(values, counts):
+            classe_area = float(count * area_ha)
+            rows.append({
+                "Ano": int(year),
+                "Código": int(value),
+                "Classe": mapbiomas_class_name(int(value)),
+                "Grupo": mapbiomas_group(int(value)),
+                "Área (hectares)": classe_area,
+                "Área (quilômetros quadrados)": classe_area / 100.0,
+                "Percentual da área válida": 100.0 * classe_area / max(total_ha, EPS),
+            })
+    return pd.DataFrame(rows)
+
+
+def make_mapbiomas_folium(arr, meta, title: str, legend_items, key_suffix: str, opacity: float = 0.92, change_rgba=None):
+    folium_bounds = meta["folium_bounds"]
+    center_lat = (folium_bounds[0][0] + folium_bounds[1][0]) / 2
+    center_lon = (folium_bounds[0][1] + folium_bounds[1][1]) / 2
+    mapa = folium.Map(location=[center_lat, center_lon], tiles="CartoDB positron", zoom_start=13)
+    rgba = change_rgba if change_rgba is not None else mapbiomas_to_rgba(arr, meta.get("nodata"))
+    raster_layers.ImageOverlay(
+        image=rgba,
+        bounds=folium_bounds,
+        opacity=opacity,
+        interactive=True,
+        zindex=1,
+    ).add_to(mapa)
+    mapa.fit_bounds(folium_bounds)
+    mapa.get_root().html.add_child(folium.Element(mapbiomas_legend_html(title, legend_items)))
+    return st_folium(mapa, width=900, height=560, key=key_suffix)
+
+
+def page_mapbiomas_mudancas():
+    st.subheader("🛰️ Mudanças MapBiomas")
+    st.caption(
+        "Aba dedicada aos arquivos `regap_coverage_YYYY.tif` disponíveis no diretório raiz do aplicativo. "
+        "O foco aqui é enxergar trajetórias: permanências, conversões, recuperação de formações naturais e avanço de áreas construídas ou agropecuárias."
+    )
+
+    mb_files = find_mapbiomas_files(base_path)
+    if not mb_files:
+        st.warning(
+            "Não encontrei arquivos no padrão `regap_coverage_YYYY.tif` no diretório raiz do app. "
+            "Coloque os rasters de 1985 a 2024 na mesma pasta do script para ativar esta aba."
+        )
+        return
+
+    file_by_year = {item["Ano"]: item["Arquivo"] for item in mb_files}
+    years = sorted(file_by_year.keys())
+
+    st.sidebar.markdown("---")
+    st.sidebar.markdown("### Filtros • Mudanças MapBiomas")
+    ano_inicial = st.sidebar.selectbox("Ano inicial:", years, index=0, key="mb_ano_inicial")
+    default_final_idx = len(years) - 1
+    ano_final = st.sidebar.selectbox("Ano final:", years, index=default_final_idx, key="mb_ano_final")
+    ano_mapa = st.sidebar.selectbox("Ano para visualizar no mapa de classes:", years, index=default_final_idx, key="mb_ano_mapa")
+    opacidade = st.sidebar.slider("Opacidade do raster:", 0.30, 1.00, 0.88, 0.05, key="mb_opacidade")
+
+    if ano_inicial == ano_final:
+        st.info("Escolha anos diferentes para calcular mudanças. O mapa de classes continua disponível.")
+
+    signature = tuple((int(item["Ano"]), str(item["Arquivo"]), float(item["Arquivo"].stat().st_mtime)) for item in mb_files)
+    area_df = compute_mapbiomas_area_table(signature)
+    if area_df.empty:
+        st.warning("Os rasters foram encontrados, mas não foi possível calcular áreas válidas.")
+        return
+
+    arr_inicial, meta_inicial = read_mapbiomas_array(file_by_year[ano_inicial])
+    arr_final = align_mapbiomas_to_reference(file_by_year[ano_final], meta_inicial)
+    arr_mapa, meta_mapa = read_mapbiomas_array(file_by_year[ano_mapa])
+
+    valid_i = valid_mapbiomas_mask(arr_inicial, meta_inicial.get("nodata"))
+    valid_f = valid_mapbiomas_mask(arr_final, meta_inicial.get("nodata"))
+    valid = valid_i & valid_f
+    pixel_area = float(meta_inicial["pixel_area_ha"])
+    total_valid_ha = float(valid.sum() * pixel_area)
+    changed_mask = valid & (arr_inicial != arr_final)
+    changed_ha = float(changed_mask.sum() * pixel_area)
+    stable_ha = float((valid & (arr_inicial == arr_final)).sum() * pixel_area)
+    changed_pct = 100 * changed_ha / max(total_valid_ha, EPS)
+
+    base_area = area_df[area_df["Ano"] == ano_inicial][["Código", "Classe", "Grupo", "Área (hectares)"]]
+    final_area = area_df[area_df["Ano"] == ano_final][["Código", "Classe", "Grupo", "Área (hectares)"]]
+    delta = base_area.merge(final_area, on=["Código", "Classe", "Grupo"], how="outer", suffixes=(" inicial", " final")).fillna(0)
+    delta["Variação (hectares)"] = delta["Área (hectares) final"] - delta["Área (hectares) inicial"]
+    maior_ganho = delta.sort_values("Variação (hectares)", ascending=False).head(1)
+    maior_perda = delta.sort_values("Variação (hectares)", ascending=True).head(1)
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Anos encontrados", f"{min(years)}–{max(years)}")
+    c2.metric("Área analisada", f"{total_valid_ha:,.1f} hectares")
+    c3.metric("Área que mudou", f"{changed_ha:,.1f} hectares", f"{changed_pct:.1f}%")
+    c4.metric("Área estável", f"{stable_ha:,.1f} hectares", f"{100 - changed_pct:.1f}%")
+
+    g1, g2 = st.columns(2)
+    with g1:
+        if not maior_ganho.empty:
+            row = maior_ganho.iloc[0]
+            st.success(f"Maior ganho: **{row['Classe']}** (+{row['Variação (hectares)']:,.1f} hectares)")
+    with g2:
+        if not maior_perda.empty:
+            row = maior_perda.iloc[0]
+            st.error(f"Maior perda: **{row['Classe']}** ({row['Variação (hectares)']:,.1f} hectares)")
+
+    st.markdown("### Cartografia da mudança")
+    tab_classes, tab_changes, tab_series, tab_matrix = st.tabs([
+        "Mapa por ano", "Mapa de mudanças", "Trajetória temporal", "Matriz de transição"
+    ])
+
+    with tab_classes:
+        st.markdown("#### Mapa de classes MapBiomas")
+        legend = class_legend_items(arr_mapa, meta_mapa.get("nodata"))
+        make_mapbiomas_folium(
+            arr_mapa,
+            meta_mapa,
+            f"MapBiomas • {ano_mapa}",
+            legend,
+            key_suffix=f"mb_classes_{ano_mapa}",
+            opacity=opacidade,
+        )
+        with st.expander("Legenda completa das classes presentes"):
+            if legend:
+                leg_df = pd.DataFrame({"Cor": [c for c, _ in legend], "Classe": [l for _, l in legend]})
+                st.dataframe(leg_df, use_container_width=True)
+
+    with tab_changes:
+        st.markdown(f"#### Mapa de mudanças entre {ano_inicial} e {ano_final}")
+        change_code, rgba_change = change_map_rgba(arr_inicial, arr_final, meta_inicial.get("nodata"), meta_inicial.get("nodata"))
+        present_change_codes = sorted([int(v) for v in np.unique(change_code[change_code > 0])])
+        change_legend = [(CHANGE_CLASSES[c][1], CHANGE_CLASSES[c][0]) for c in present_change_codes]
+        make_mapbiomas_folium(
+            arr_inicial,
+            meta_inicial,
+            f"Mudanças • {ano_inicial} → {ano_final}",
+            change_legend,
+            key_suffix=f"mb_changes_{ano_inicial}_{ano_final}",
+            opacity=opacidade,
+            change_rgba=rgba_change,
+        )
+
+        change_rows = []
+        for code in present_change_codes:
+            area = float((change_code == code).sum() * pixel_area)
+            change_rows.append({"Tipo de mudança": CHANGE_CLASSES[code][0], "Área (hectares)": area})
+        change_df = pd.DataFrame(change_rows).sort_values("Área (hectares)", ascending=False)
+        fig_change = px.bar(
+            change_df,
+            x="Área (hectares)",
+            y="Tipo de mudança",
+            orientation="h",
+            title="Quanto cada tipo de mudança pesa na paisagem?",
+            text="Área (hectares)",
+            color="Tipo de mudança",
+            color_discrete_map={CHANGE_CLASSES[c][0]: CHANGE_CLASSES[c][1] for c in CHANGE_CLASSES},
+        )
+        fig_change.update_traces(texttemplate="%{text:,.1f}", textposition="outside")
+        fig_change.update_layout(showlegend=False, yaxis={"categoryorder": "total ascending"})
+        st.plotly_chart(fig_change, use_container_width=True)
+
+    with tab_series:
+        st.markdown("#### A paisagem como série histórica")
+        visao = st.radio(
+            "Agrupar a série por:",
+            ["Grandes grupos", "Classes detalhadas"],
+            horizontal=True,
+            key="mb_visao_series",
+        )
+        if visao == "Grandes grupos":
+            serie = area_df.groupby(["Ano", "Grupo"], as_index=False)["Área (hectares)"].sum()
+            fig_area = px.area(
+                serie,
+                x="Ano",
+                y="Área (hectares)",
+                color="Grupo",
+                title="Evolução por grandes grupos de uso e cobertura",
+                color_discrete_map=MAPBIOMAS_GROUP_COLORS,
+            )
+            st.plotly_chart(fig_area, use_container_width=True)
+        else:
+            classes_presentes = sorted(area_df["Classe"].unique())
+            default_classes = list(delta.reindex(delta["Variação (hectares)"].abs().sort_values(ascending=False).index)["Classe"].head(6))
+            classes_sel = st.multiselect(
+                "Classes para acompanhar:",
+                classes_presentes,
+                default=default_classes,
+                key="mb_classes_series",
+            )
+            serie = area_df[area_df["Classe"].isin(classes_sel)]
+            fig_line = px.line(
+                serie,
+                x="Ano",
+                y="Área (hectares)",
+                color="Classe",
+                markers=True,
+                title="Trajetória das classes selecionadas",
+            )
+            st.plotly_chart(fig_line, use_container_width=True)
+
+        st.markdown("#### Maiores ganhos e perdas no período")
+        top_delta = pd.concat([
+            delta.sort_values("Variação (hectares)", ascending=False).head(8),
+            delta.sort_values("Variação (hectares)", ascending=True).head(8),
+        ]).drop_duplicates("Código")
+        fig_delta = px.bar(
+            top_delta.sort_values("Variação (hectares)"),
+            x="Variação (hectares)",
+            y="Classe",
+            color="Grupo",
+            orientation="h",
+            title=f"Saldo de área por classe • {ano_inicial} → {ano_final}",
+            color_discrete_map=MAPBIOMAS_GROUP_COLORS,
+        )
+        st.plotly_chart(fig_delta, use_container_width=True)
+
+    with tab_matrix:
+        st.markdown("#### Matriz de transição entre grandes grupos")
+        old_gid = array_to_group_id(arr_inicial)
+        new_gid = array_to_group_id(arr_final)
+        valid_groups = valid & (old_gid > 0) & (new_gid > 0) & (old_gid != 5) & (new_gid != 5)
+        matrix = pd.DataFrame(0.0, index=[group_id_label(i) for i in [1, 2, 3, 4]], columns=[group_id_label(i) for i in [1, 2, 3, 4]])
+        if np.any(valid_groups):
+            combo, counts = np.unique((old_gid[valid_groups].astype(int) * 10 + new_gid[valid_groups].astype(int)), return_counts=True)
+            for c, n in zip(combo, counts):
+                old = int(c // 10)
+                new = int(c % 10)
+                if old in [1, 2, 3, 4] and new in [1, 2, 3, 4]:
+                    matrix.loc[group_id_label(old), group_id_label(new)] += float(n * pixel_area)
+        fig_mat = px.imshow(
+            matrix,
+            text_auto=".1f",
+            aspect="auto",
+            title=f"Área de transição em hectares • {ano_inicial} → {ano_final}",
+            labels=dict(x="Grupo em " + str(ano_final), y="Grupo em " + str(ano_inicial), color="Hectares"),
+        )
+        st.plotly_chart(fig_mat, use_container_width=True)
+
+        st.markdown("#### Top transições detalhadas")
+        changed_valid = valid & (arr_inicial != arr_final)
+        if np.any(changed_valid):
+            combo, counts = np.unique(arr_inicial[changed_valid].astype(int) * 1000 + arr_final[changed_valid].astype(int), return_counts=True)
+            rows = []
+            for code, n in zip(combo, counts):
+                old = int(code // 1000)
+                new = int(code % 1000)
+                rows.append({
+                    "Transição": f"{mapbiomas_class_name(old)} → {mapbiomas_class_name(new)}",
+                    "Área (hectares)": float(n * pixel_area),
+                    "Classe inicial": mapbiomas_class_name(old),
+                    "Classe final": mapbiomas_class_name(new),
+                })
+            top_trans = pd.DataFrame(rows).sort_values("Área (hectares)", ascending=False).head(15)
+            fig_top = px.bar(
+                top_trans.sort_values("Área (hectares)"),
+                x="Área (hectares)",
+                y="Transição",
+                orientation="h",
+                title="Transições detalhadas mais relevantes",
+                text="Área (hectares)",
+            )
+            fig_top.update_traces(texttemplate="%{text:,.1f}", textposition="outside")
+            st.plotly_chart(fig_top, use_container_width=True)
+            st.dataframe(top_trans, use_container_width=True)
+        else:
+            st.info("Não foram detectadas transições detalhadas entre os anos selecionados.")
+
+    with st.expander("Tabela de áreas calculadas a partir dos rasters MapBiomas"):
+        st.dataframe(area_df.sort_values(["Ano", "Grupo", "Classe"]), use_container_width=True)
+
+
 
 # =====================================================================
 # PÁGINA 1 — MACRÓFITAS
@@ -1491,7 +2045,13 @@ elif pagina == "🌎 Uso do Solo & Água":
     page_uso_solo_agua()
 
 # =====================================================================
-# PÁGINA 5 — SEDIMENTOS, BATIMETRIA & RISCO
+# PÁGINA 5 — MUDANÇAS MAPBIOMAS
+# =====================================================================
+elif pagina == "🛰️ Mudanças MapBiomas":
+    page_mapbiomas_mudancas()
+
+# =====================================================================
+# PÁGINA 6 — SEDIMENTOS, BATIMETRIA & RISCO
 # =====================================================================
 elif pagina == "🧱 Sedimentos & Risco":
     page_sedimentos_risco()
