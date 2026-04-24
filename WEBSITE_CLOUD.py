@@ -52,6 +52,7 @@ with st.sidebar:
             "📊 Síntese Integrada",
             "🌿 Macrófitas",
             "💧 Qualidade da Água",
+            "🌎 Uso do Solo & ICB",
             "🧱 Sedimentos & Risco",
         ],
         index=0
@@ -61,7 +62,7 @@ with st.sidebar:
 # HEADER
 # =====================================================================
 st.markdown("# AQUASMART • Dashboard Científico")
-st.caption("Macrófitas • Qualidade da Água • Síntese integrada • Sedimentos e risco ambiental")
+st.caption("Macrófitas • Qualidade da Água • Uso do solo & ICB • Síntese integrada • Sedimentos e risco ambiental")
 st.markdown("---")
 
 # =====================================================================
@@ -285,6 +286,385 @@ def make_demo_scenario_data():
                 "Índice_risco_0_100": round(float(risco), 1),
             })
     return pd.DataFrame(cenarios)
+
+
+@st.cache_data
+def make_demo_landuse_icb_data(seed: int = 123):
+    """Dados simulados para módulo integrado de uso do solo + qualidade da água do ICB."""
+    rng = np.random.default_rng(seed)
+
+    subbacias = [
+        "Rib. Ibirité", "Cór. Pintado", "Barreirinho", "Sumidouro",
+        "Urubu", "Jatobá", "Palmares", "Rola-Moça"
+    ]
+    area_km2 = {
+        "Rib. Ibirité": 26.5,
+        "Cór. Pintado": 15.8,
+        "Barreirinho": 11.2,
+        "Sumidouro": 9.1,
+        "Urubu": 8.4,
+        "Jatobá": 7.6,
+        "Palmares": 6.7,
+        "Rola-Moça": 6.3,
+    }
+    anos = [2000, 2012, 2023, 2030, 2050]
+    classes = ["Vegetação", "Urbano", "Solo exposto/Pastagem", "Água"]
+
+    rows = []
+    for sb in subbacias:
+        base_veg = rng.uniform(30, 58)
+        base_urb = rng.uniform(12, 36)
+        base_past = max(100 - base_veg - base_urb - rng.uniform(1.0, 4.0), 8)
+        base_agua = max(100 - base_veg - base_urb - base_past, 1.0)
+        for ano in anos:
+            dt = ano - 2000
+            urbano = np.clip(base_urb + 0.38 * dt + rng.normal(0, 1.2), 5, 82)
+            vegetacao = np.clip(base_veg - 0.24 * dt + rng.normal(0, 1.4), 5, 80)
+            agua = np.clip(base_agua - 0.025 * dt + rng.normal(0, 0.25), 0.4, 6)
+            pastagem = max(100 - urbano - vegetacao - agua, 2)
+            vals = {
+                "Vegetação": vegetacao,
+                "Urbano": urbano,
+                "Solo exposto/Pastagem": pastagem,
+                "Água": agua,
+            }
+            total = sum(vals.values())
+            for classe in classes:
+                pct = vals[classe] / total * 100
+                rows.append({
+                    "Ano": ano,
+                    "Sub-bacia": sb,
+                    "Classe": classe,
+                    "Percentual_%": pct,
+                    "Área_km2": pct / 100 * area_km2[sb],
+                })
+    uso = pd.DataFrame(rows)
+
+    # Pontos amostrais demonstrativos do ICB: 5 regiões do reservatório + tributários/saída.
+    pontos = pd.DataFrame({
+        "Ponto": ["R1", "R2", "R3", "R4", "R5", "Trib. Ibirité", "Trib. Pintado", "Saída"],
+        "Tipo": ["Reservatório", "Reservatório", "Reservatório", "Reservatório", "Reservatório", "Tributário", "Tributário", "Defluente"],
+        "Sub-bacia_associada": ["Sumidouro", "Rib. Ibirité", "Cór. Pintado", "Barreirinho", "Palmares", "Rib. Ibirité", "Cór. Pintado", "Rib. Ibirité"],
+        "Latitude": [-20.0205, -20.0258, -20.0303, -20.0188, -20.0134, -20.0118, -20.0277, -20.0330],
+        "Longitude": [-44.1115, -44.1050, -44.0972, -44.0928, -44.1012, -44.0865, -44.0910, -44.1168],
+        "Profundidade_m": [3.5, 11.8, 7.2, 5.8, 2.9, 0.8, 0.7, 1.3],
+    })
+
+    datas = pd.date_range("2024-07-01", "2025-09-01", freq="MS")
+    rows = []
+    for _, p in pontos.iterrows():
+        if p["Tipo"] == "Tributário":
+            carga_factor = 1.28
+        elif p["Tipo"] == "Defluente":
+            carga_factor = 0.82
+        else:
+            carga_factor = 1.0
+        if p["Ponto"] in ["R2", "R3", "Trib. Ibirité", "Trib. Pintado"]:
+            carga_factor *= 1.18
+
+        for _, data in enumerate(datas):
+            saz_chuva = 0.5 + 0.5 * np.sin(2 * np.pi * ((data.month - 10) / 12.0))
+            estrat = 0.5 + 0.5 * np.sin(2 * np.pi * ((data.month - 1) / 12.0))
+            pt = np.clip((115 + 95 * saz_chuva) * carga_factor + rng.normal(0, 18), 20, None)
+            nt = np.clip((2.1 + 1.15 * saz_chuva) * carga_factor + rng.normal(0, 0.22), 0.2, None)
+            cod = np.clip((6.5 + 2.6 * saz_chuva) * carga_factor + rng.normal(0, 0.8), 1.5, None)
+            orto = np.clip(pt * rng.uniform(0.18, 0.36), 5, None)
+            nitrato = np.clip(nt * rng.uniform(0.18, 0.42), 0.05, None)
+            amonia = np.clip(nt * rng.uniform(0.08, 0.26) * (1 + 0.35 * estrat), 0.02, None)
+            clorofila = np.clip((48 + 70 * saz_chuva + 0.18 * pt) * (1.06 if p["Tipo"] == "Reservatório" else 0.75) + rng.normal(0, 12), 4, None)
+            ficocianina = np.clip(0.22 * clorofila + rng.normal(0, 4), 0.5, None)
+            turb = np.clip((12 + 10 * saz_chuva) * carga_factor + rng.normal(0, 3), 1, None)
+            secchi = np.clip(95 - 2.15 * turb - 0.10 * clorofila + rng.normal(0, 5), 12, 110)
+            od = np.clip(7.4 - 0.020 * clorofila - 0.45 * estrat + rng.normal(0, 0.55), 0.4, 10.5)
+            temp = np.clip(22.5 + 4.8 * estrat + rng.normal(0, 0.6), 17, 31)
+            ph = np.clip(7.2 + 0.22 * saz_chuva + rng.normal(0, 0.18), 6.2, 9.4)
+            ce = np.clip((185 + 110 * saz_chuva) * carga_factor + rng.normal(0, 25), 40, None)
+            fito = np.clip((22000 + 430 * clorofila) * (1 + rng.normal(0, 0.18)), 1000, None)
+            af_anoxia = np.clip((55 - 6.5 * od + 12 * estrat + rng.normal(0, 5)), 0, 100)
+            schmidt = np.clip(18 + 34 * estrat + rng.normal(0, 5), 1, None)
+            ppb = np.clip(2.2 + 0.012 * clorofila + rng.normal(0, 0.25), 0.1, None)
+            respiracao = np.clip(2.0 + 0.009 * cod + 0.010 * clorofila + rng.normal(0, 0.22), 0.1, None)
+            ple = ppb - respiracao
+
+            rows.append({
+                "Data": data,
+                "Ponto": p["Ponto"],
+                "Tipo": p["Tipo"],
+                "Sub-bacia_associada": p["Sub-bacia_associada"],
+                "Latitude": p["Latitude"],
+                "Longitude": p["Longitude"],
+                "Profundidade_m": p["Profundidade_m"],
+                "PT_ugL": pt,
+                "NT_mgL": nt,
+                "COD_mgL": cod,
+                "Ortofosfato_ugL": orto,
+                "Nitrato_mgL": nitrato,
+                "Amonia_mgL": amonia,
+                "Clorofila_ugL": clorofila,
+                "Ficocianina_ugL": ficocianina,
+                "Turbidez_NTU": turb,
+                "Secchi_cm": secchi,
+                "OD_mgL": od,
+                "Temperatura_C": temp,
+                "pH": ph,
+                "Condutividade_uScm": ce,
+                "Fitoplancton_cel_mL": fito,
+                "AF_anoxia_%": af_anoxia,
+                "Schmidt_J_m2": schmidt,
+                "PPB_gO2_m2_d": ppb,
+                "Respiracao_gO2_m2_d": respiracao,
+                "PLE_gO2_m2_d": ple,
+            })
+    agua = pd.DataFrame(rows)
+
+    # Perfil vertical demonstrativo para ponto profundo do reservatório.
+    profs = np.array([0.2, 1, 2, 4, 6, 8, 10, 12])
+    perf_rows = []
+    for data in pd.date_range("2025-03-01", "2025-10-01", freq="MS"):
+        estrat = 0.5 + 0.5 * np.sin(2 * np.pi * ((data.month - 1) / 12.0))
+        for z in profs:
+            perf_rows.append({
+                "Data": data,
+                "Profundidade_m": z,
+                "Temperatura_C": 27.2 - 0.22 * z - 1.6 * (z > 4) * estrat + rng.normal(0, 0.12),
+                "OD_mgL": np.clip(7.2 - 0.55 * z - 1.9 * estrat * (z > 4) + rng.normal(0, 0.25), 0.1, 9),
+                "Ortofosfato_ugL": np.clip(18 + 7.5 * z + 22 * estrat * (z > 5) + rng.normal(0, 5), 4, None),
+                "Condutividade_uScm": np.clip(215 + 8 * z + 30 * estrat * (z > 5) + rng.normal(0, 8), 80, None),
+            })
+    perfis = pd.DataFrame(perf_rows)
+    return uso, agua, pontos, perfis
+
+
+def page_uso_solo_icb():
+    st.subheader("🌎 Uso do Solo & Qualidade da Água — ICB")
+    st.caption(
+        "Módulo demonstrativo com dados simulados. A proposta é integrar LUCC da bacia, pontos limnológicos do ICB, "
+        "nutrientes, sonda multiparâmetros, fitoplâncton, metabolismo e perfis verticais."
+    )
+
+    uso, agua, pontos, perfis = make_demo_landuse_icb_data()
+
+    st.sidebar.markdown("---")
+    st.sidebar.markdown("### Filtros • Uso do Solo & ICB")
+    anos_disp = sorted(uso["Ano"].unique())
+    ano_sel = st.sidebar.selectbox(
+        "Ano de uso do solo:",
+        anos_disp,
+        index=anos_disp.index(2023) if 2023 in anos_disp else len(anos_disp) - 1,
+        key="uso_ano",
+    )
+    sub_sel = st.sidebar.multiselect(
+        "Sub-bacias:",
+        sorted(uso["Sub-bacia"].unique()),
+        default=sorted(uso["Sub-bacia"].unique()),
+        key="uso_subbacias",
+    )
+    pontos_sel = st.sidebar.multiselect(
+        "Pontos ICB:",
+        sorted(agua["Ponto"].unique()),
+        default=sorted(agua["Ponto"].unique()),
+        key="icb_pontos",
+    )
+    var_icb = st.sidebar.selectbox(
+        "Variável ICB principal:",
+        [
+            "PT_ugL", "NT_mgL", "COD_mgL", "Ortofosfato_ugL", "Nitrato_mgL", "Amonia_mgL",
+            "Clorofila_ugL", "Ficocianina_ugL", "Turbidez_NTU", "Secchi_cm", "OD_mgL",
+            "Condutividade_uScm", "Fitoplancton_cel_mL", "AF_anoxia_%", "Schmidt_J_m2",
+            "PPB_gO2_m2_d", "Respiracao_gO2_m2_d", "PLE_gO2_m2_d",
+        ],
+        index=0,
+        key="icb_var",
+    )
+
+    uso_f = uso[(uso["Ano"] == ano_sel) & (uso["Sub-bacia"].isin(sub_sel))].copy()
+    agua_f = agua[agua["Ponto"].isin(pontos_sel)].copy()
+    pontos_f = pontos[pontos["Ponto"].isin(pontos_sel)].copy()
+
+    if uso_f.empty or agua_f.empty:
+        st.warning("Selecione ao menos uma sub-bacia e um ponto ICB para visualizar o módulo.")
+        return
+
+    # Indicadores de síntese
+    uso_ano = uso[(uso["Ano"] == ano_sel) & (uso["Sub-bacia"].isin(sub_sel)) & (uso["Classe"].isin(["Urbano", "Vegetação"]))]
+    urbano_pct = uso_ano[uso_ano["Classe"] == "Urbano"]["Percentual_%"].mean()
+    veg_pct = uso_ano[uso_ano["Classe"] == "Vegetação"]["Percentual_%"].mean()
+    media_var = agua_f[var_icb].mean()
+    pontos_crit = agua_f.groupby("Ponto")["PT_ugL"].mean().gt(180).sum()
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Urbanização média", f"{urbano_pct:.1f}%")
+    c2.metric("Vegetação média", f"{veg_pct:.1f}%")
+    c3.metric(f"Média • {var_icb}", f"{media_var:,.2f}")
+    c4.metric("Pontos com PT elevado", f"{int(pontos_crit)}")
+
+    st.markdown("### Uso e cobertura do solo na bacia")
+    col_lu1, col_lu2 = st.columns([1.05, 1.0])
+    with col_lu1:
+        fig_lu = px.bar(
+            uso_f,
+            x="Sub-bacia",
+            y="Percentual_%",
+            color="Classe",
+            title=f"Composição percentual por sub-bacia — {ano_sel}",
+            labels={"Percentual_%": "Percentual (%)"},
+        )
+        fig_lu.update_layout(barmode="stack", xaxis_tickangle=-35)
+        st.plotly_chart(fig_lu, use_container_width=True)
+
+    with col_lu2:
+        uso_total = uso[uso["Sub-bacia"].isin(sub_sel)].groupby(["Ano", "Classe"], as_index=False)["Área_km2"].sum()
+        fig_area = px.area(
+            uso_total,
+            x="Ano",
+            y="Área_km2",
+            color="Classe",
+            title="Evolução demonstrativa das classes de uso do solo",
+            labels={"Área_km2": "Área (km²)"},
+        )
+        st.plotly_chart(fig_area, use_container_width=True)
+
+    st.markdown("### Pontos ICB e variabilidade espacial")
+    col_map, col_box = st.columns([1.05, 1.0])
+    with col_map:
+        mapa = folium.Map(location=[-20.023, -44.104], zoom_start=13, tiles="OpenStreetMap")
+        resumo_pontos = agua_f.groupby("Ponto", as_index=False)[var_icb].mean().merge(pontos_f, on="Ponto", how="left")
+        vmin, vmax = resumo_pontos[var_icb].min(), resumo_pontos[var_icb].max()
+        for _, row in resumo_pontos.iterrows():
+            norm = (row[var_icb] - vmin) / (vmax - vmin + EPS)
+            radius = 7 + 13 * norm
+            popup = (
+                f"<b>{row['Ponto']}</b><br>"
+                f"Tipo: {row['Tipo']}<br>"
+                f"Sub-bacia: {row['Sub-bacia_associada']}<br>"
+                f"{var_icb}: {row[var_icb]:.2f}"
+            )
+            folium.CircleMarker(
+                location=[row["Latitude"], row["Longitude"]],
+                radius=radius,
+                popup=popup,
+                color="darkblue",
+                fill=True,
+                fill_opacity=0.72,
+            ).add_to(mapa)
+        st_folium(mapa, width=760, height=500, key="mapa_uso_icb")
+
+    with col_box:
+        fig_box = px.box(
+            agua_f,
+            x="Ponto",
+            y=var_icb,
+            color="Tipo",
+            points="all",
+            title=f"Distribuição por ponto — {var_icb}",
+        )
+        fig_box.update_layout(xaxis_tickangle=-35)
+        st.plotly_chart(fig_box, use_container_width=True)
+
+    st.markdown("### Séries temporais e matriz limnológica")
+    col_ts, col_heat = st.columns([1.15, 1.0])
+    with col_ts:
+        ts = agua_f.groupby(["Data", "Tipo"], as_index=False)[var_icb].mean()
+        fig_ts = px.line(
+            ts,
+            x="Data",
+            y=var_icb,
+            color="Tipo",
+            markers=True,
+            title=f"Série temporal mensal — {var_icb}",
+        )
+        st.plotly_chart(fig_ts, use_container_width=True)
+
+    with col_heat:
+        vars_heat = ["PT_ugL", "NT_mgL", "COD_mgL", "Clorofila_ugL", "Turbidez_NTU", "Secchi_cm", "OD_mgL", "AF_anoxia_%"]
+        heat = agua_f.groupby("Ponto")[vars_heat].mean()
+        heat_z = (heat - heat.mean()) / (heat.std(ddof=0) + EPS)
+        fig_heat = px.imshow(
+            heat_z,
+            aspect="auto",
+            text_auto=".1f",
+            title="Heatmap padronizado de pressão limnológica",
+            labels=dict(color="Escore-z"),
+        )
+        st.plotly_chart(fig_heat, use_container_width=True)
+
+    st.markdown("### Relação uso do solo × qualidade da água")
+    uso_urb = uso[(uso["Ano"] == ano_sel) & (uso["Classe"] == "Urbano")][["Sub-bacia", "Percentual_%"]].rename(columns={"Percentual_%": "Urbano_%"})
+    uso_veg = uso[(uso["Ano"] == ano_sel) & (uso["Classe"] == "Vegetação")][["Sub-bacia", "Percentual_%"]].rename(columns={"Percentual_%": "Vegetação_%"})
+    pressao = agua_f.groupby("Sub-bacia_associada", as_index=False).agg({
+        "PT_ugL": "mean",
+        "NT_mgL": "mean",
+        "Clorofila_ugL": "mean",
+        "Turbidez_NTU": "mean",
+        "OD_mgL": "mean",
+    }).rename(columns={"Sub-bacia_associada": "Sub-bacia"})
+    pressao = pressao.merge(uso_urb, on="Sub-bacia", how="left").merge(uso_veg, on="Sub-bacia", how="left")
+    pressao["Índice_trófico_demo"] = (
+        0.38 * (pressao["PT_ugL"] / pressao["PT_ugL"].max()) +
+        0.28 * (pressao["Clorofila_ugL"] / pressao["Clorofila_ugL"].max()) +
+        0.20 * (pressao["Turbidez_NTU"] / pressao["Turbidez_NTU"].max()) +
+        0.14 * (1 - pressao["OD_mgL"] / pressao["OD_mgL"].max())
+    ) * 100
+
+    col_rel1, col_rel2 = st.columns([1.0, 1.0])
+    with col_rel1:
+        fig_rel = px.scatter(
+            pressao,
+            x="Urbano_%",
+            y="Índice_trófico_demo",
+            size="PT_ugL",
+            color="Vegetação_%",
+            hover_name="Sub-bacia",
+            title="Urbanização e pressão trófica demonstrativa",
+            labels={"Urbano_%": "Urbano (%)", "Índice_trófico_demo": "Índice trófico demo (0–100)"},
+        )
+        st.plotly_chart(fig_rel, use_container_width=True)
+
+    with col_rel2:
+        fig_rank = px.bar(
+            pressao.sort_values("Índice_trófico_demo"),
+            x="Índice_trófico_demo",
+            y="Sub-bacia",
+            orientation="h",
+            text="Índice_trófico_demo",
+            title="Ranking conceitual de sub-bacias críticas",
+            labels={"Índice_trófico_demo": "Índice trófico demo"},
+        )
+        fig_rank.update_traces(texttemplate="%{text:.1f}", textposition="outside")
+        fig_rank.update_layout(xaxis_range=[0, 105])
+        st.plotly_chart(fig_rank, use_container_width=True)
+
+    st.markdown("### Perfil vertical demonstrativo — região profunda do reservatório")
+    data_perfil = st.selectbox(
+        "Data do perfil vertical:",
+        sorted(perfis["Data"].dt.strftime("%Y-%m-%d").unique()),
+        index=0,
+        key="perfil_data",
+    )
+    perfil_f = perfis[perfis["Data"].dt.strftime("%Y-%m-%d") == data_perfil]
+    perfil_var = st.selectbox(
+        "Variável do perfil:",
+        ["Temperatura_C", "OD_mgL", "Ortofosfato_ugL", "Condutividade_uScm"],
+        index=1,
+        key="perfil_var",
+    )
+    fig_perfil = px.line(
+        perfil_f,
+        x=perfil_var,
+        y="Profundidade_m",
+        markers=True,
+        title=f"Perfil vertical — {perfil_var} • {data_perfil}",
+    )
+    fig_perfil.update_yaxes(autorange="reversed", title="Profundidade (m)")
+    st.plotly_chart(fig_perfil, use_container_width=True)
+
+    with st.expander("Tabelas demonstrativas do módulo"):
+        st.markdown("**Uso e cobertura do solo**")
+        st.dataframe(uso, use_container_width=True)
+        st.markdown("**Qualidade da água / ICB**")
+        st.dataframe(agua, use_container_width=True)
+        st.markdown("**Pontos amostrais**")
+        st.dataframe(pontos, use_container_width=True)
 
 
 def page_sintese_integrada():
@@ -1053,7 +1433,13 @@ elif pagina == "💧 Qualidade da Água":
     )
 
 # =====================================================================
-# PÁGINA 4 — SEDIMENTOS, BATIMETRIA & RISCO
+# PÁGINA 4 — USO DO SOLO & QUALIDADE DA ÁGUA ICB
+# =====================================================================
+elif pagina == "🌎 Uso do Solo & ICB":
+    page_uso_solo_icb()
+
+# =====================================================================
+# PÁGINA 5 — SEDIMENTOS, BATIMETRIA & RISCO
 # =====================================================================
 elif pagina == "🧱 Sedimentos & Risco":
     page_sedimentos_risco()
