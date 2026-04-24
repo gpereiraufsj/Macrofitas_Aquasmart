@@ -1035,19 +1035,63 @@ def mapbiomas_group(value: int) -> str:
     return "Outra classe"
 
 
+def _normalize_folium_bounds(raw_bounds):
+    """Recebe limites em latitude/longitude e devolve [[sul, oeste], [norte, leste]]."""
+    south = min(float(raw_bounds[0][0]), float(raw_bounds[1][0]))
+    north = max(float(raw_bounds[0][0]), float(raw_bounds[1][0]))
+    west = min(float(raw_bounds[0][1]), float(raw_bounds[1][1]))
+    east = max(float(raw_bounds[0][1]), float(raw_bounds[1][1]))
+    return [[south, west], [north, east]]
+
+
+def _bounds_are_geographic(folium_bounds) -> bool:
+    """Testa se limites parecem estar em graus geográficos válidos."""
+    try:
+        [[south, west], [north, east]] = _normalize_folium_bounds(folium_bounds)
+        return (-90 <= south <= 90 and -90 <= north <= 90 and
+                -180 <= west <= 180 and -180 <= east <= 180 and
+                north > south and east > west)
+    except Exception:
+        return False
+
+
 def bounds_to_4326(bounds, crs):
-    """Converte os limites do raster para latitude/longitude para uso no Folium."""
+    """
+    Converte os limites do raster para latitude/longitude para uso no Folium.
+
+    Observação importante:
+    alguns GeoTIFFs exportados/reprocessados podem chegar sem CRS.
+    Quando isso acontece, esta função primeiro testa se os bounds já parecem
+    estar em graus. Se não parecerem, tenta EPSG:3857 como fallback, pois é
+    comum em rasters usados em dashboards web.
+    """
     if crs is None:
-        return [[bounds.bottom, bounds.left], [bounds.top, bounds.right]]
+        candidate = [[bounds.bottom, bounds.left], [bounds.top, bounds.right]]
+        if _bounds_are_geographic(candidate):
+            return _normalize_folium_bounds(candidate)
+
+        # Fallback comum para rasters web sem CRS declarado.
+        try:
+            transformer = Transformer.from_crs("EPSG:3857", "EPSG:4326", always_xy=True)
+            lon1, lat1 = transformer.transform(bounds.left, bounds.bottom)
+            lon2, lat2 = transformer.transform(bounds.right, bounds.top)
+            candidate = [[lat1, lon1], [lat2, lon2]]
+            if _bounds_are_geographic(candidate):
+                return _normalize_folium_bounds(candidate)
+        except Exception:
+            pass
+
+        # Última tentativa: retorna normalizado, mas pode não enquadrar se o CRS real for outro.
+        return _normalize_folium_bounds([[bounds.bottom, bounds.left], [bounds.top, bounds.right]])
+
     epsg = crs.to_epsg() if hasattr(crs, "to_epsg") else None
     if epsg == 4326:
-        return [[bounds.bottom, bounds.left], [bounds.top, bounds.right]]
+        return _normalize_folium_bounds([[bounds.bottom, bounds.left], [bounds.top, bounds.right]])
+
     transformer = Transformer.from_crs(crs, "EPSG:4326", always_xy=True)
     lon1, lat1 = transformer.transform(bounds.left, bounds.bottom)
     lon2, lat2 = transformer.transform(bounds.right, bounds.top)
-    south, north = sorted([lat1, lat2])
-    west, east = sorted([lon1, lon2])
-    return [[south, west], [north, east]]
+    return _normalize_folium_bounds([[lat1, lon1], [lat2, lon2]])
 
 
 def estimate_pixel_area_ha(src) -> float:
@@ -1242,10 +1286,21 @@ def compute_mapbiomas_area_table(file_signature):
 
 
 def make_mapbiomas_folium(arr, meta, title: str, legend_items, key_suffix: str, opacity: float = 0.92, change_rgba=None):
-    folium_bounds = meta["folium_bounds"]
-    center_lat = (folium_bounds[0][0] + folium_bounds[1][0]) / 2
-    center_lon = (folium_bounds[0][1] + folium_bounds[1][1]) / 2
-    mapa = folium.Map(location=[center_lat, center_lon], tiles="CartoDB positron", zoom_start=13)
+    folium_bounds = _normalize_folium_bounds(meta["folium_bounds"])
+
+    south, west = folium_bounds[0]
+    north, east = folium_bounds[1]
+    center_lat = (south + north) / 2
+    center_lon = (west + east) / 2
+
+    mapa = folium.Map(
+        location=[center_lat, center_lon],
+        tiles="CartoDB positron",
+        zoom_start=13,
+        control_scale=True,
+        prefer_canvas=True,
+    )
+
     rgba = change_rgba if change_rgba is not None else mapbiomas_to_rgba(arr, meta.get("nodata"))
     raster_layers.ImageOverlay(
         image=rgba,
@@ -1254,9 +1309,18 @@ def make_mapbiomas_folium(arr, meta, title: str, legend_items, key_suffix: str, 
         interactive=True,
         zindex=1,
     ).add_to(mapa)
-    mapa.fit_bounds(folium_bounds)
+
+    # Força o enquadramento no raster. Isso evita o mapa abrir no zoom global.
+    mapa.fit_bounds(folium_bounds, padding=(25, 25))
+
     mapa.get_root().html.add_child(folium.Element(mapbiomas_legend_html(title, legend_items)))
-    return st_folium(mapa, width=900, height=560, key=key_suffix)
+    return st_folium(
+        mapa,
+        width=900,
+        height=560,
+        key=key_suffix,
+        returned_objects=["last_clicked", "bounds"],
+    )
 
 
 def page_mapbiomas_mudancas():
@@ -1276,6 +1340,18 @@ def page_mapbiomas_mudancas():
 
     file_by_year = {item["Ano"]: item["Arquivo"] for item in mb_files}
     years = sorted(file_by_year.keys())
+
+    with st.expander("Checagem técnica dos rasters MapBiomas", expanded=False):
+        primeiro = mb_files[0]["Arquivo"]
+        try:
+            with rasterio.open(primeiro) as src:
+                st.write("Arquivo de referência:", primeiro.name)
+                st.write("Sistema de coordenadas:", src.crs)
+                st.write("Limites originais:", src.bounds)
+                st.write("Limites usados no mapa:", bounds_to_4326(src.bounds, src.crs))
+                st.write("Área estimada do pixel:", f"{estimate_pixel_area_ha(src):.6f} hectares")
+        except Exception as exc:
+            st.warning(f"Não consegui ler a checagem técnica do raster: {exc}")
 
     st.sidebar.markdown("---")
     st.sidebar.markdown("### Filtros • Mudanças MapBiomas")
