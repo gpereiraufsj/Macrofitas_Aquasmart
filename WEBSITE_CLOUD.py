@@ -55,7 +55,7 @@ with st.sidebar:
             "🌿 Macrófitas",
             "💧 Qualidade da Água",
             "🌎 Uso do Solo & Água",
-            "🛰️ Mudanças MapBiomas",
+            "🛰️ Mudanças LULC",
             "🧱 Sedimentos & Risco",
         ],
         index=0
