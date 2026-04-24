@@ -10,6 +10,7 @@ import pandas as pd
 from rasterio.transform import rowcol
 from streamlit_folium import st_folium
 import plotly.express as px
+import plotly.graph_objects as go
 from folium import raster_layers
 from PIL import Image
 import pathlib
@@ -47,7 +48,12 @@ with st.sidebar:
 
     pagina = st.radio(
         "Navegação",
-        ["🌿 Macrófitas V2", "💧 Qualidade da Água"],
+        [
+            "📊 Síntese Integrada",
+            "🌿 Macrófitas",
+            "💧 Qualidade da Água",
+            "🧱 Sedimentos & Risco",
+        ],
         index=0
     )
 
@@ -55,7 +61,7 @@ with st.sidebar:
 # HEADER
 # =====================================================================
 st.markdown("# AQUASMART • Dashboard Científico")
-st.caption("Macrófitas (ha) • Qualidade da Água (escala fixa + filtro NDVI)")
+st.caption("Macrófitas • Qualidade da Água • Síntese integrada • Sedimentos e risco ambiental")
 st.markdown("---")
 
 # =====================================================================
@@ -170,9 +176,348 @@ def sample_from_array(src, arr, lon, lat):
 
 
 # =====================================================================
+# MÓDULOS DEMONSTRATIVOS — DADOS GENÉRICOS PARA CONCEPÇÃO DO DASHBOARD
+# =====================================================================
+@st.cache_data
+def make_demo_integrated_data(seed: int = 42):
+    """Cria dados simulados para demonstrar um painel integrado do projeto."""
+    rng = np.random.default_rng(seed)
+
+    etapas = pd.DataFrame({
+        "Etapa": [
+            "Diagnóstico ambiental",
+            "Sedimentos e dragagem",
+            "Risco hidrodinâmico",
+            "Macrófitas e qualidade da água",
+            "Governança e divulgação",
+            "OneHealth",
+        ],
+        "Conclusão_%": [82, 74, 68, 78, 46, 52],
+        "Produtos_previstos": [8, 7, 5, 9, 6, 4],
+        "Produtos_entregues": [6, 5, 3, 7, 2, 2],
+        "Prioridade": ["Alta", "Alta", "Alta", "Muito alta", "Média", "Média"],
+    })
+    etapas["Status"] = pd.cut(
+        etapas["Conclusão_%"],
+        bins=[0, 40, 70, 90, 100],
+        labels=["Atenção", "Em andamento", "Avançado", "Concluído"],
+        include_lowest=True,
+    ).astype(str)
+
+    datas = pd.date_range("2024-02-01", "2026-01-01", freq="MS")
+    n = len(datas)
+    t = np.arange(n)
+    saz = np.sin(2 * np.pi * (t / 12.0))
+
+    serie = pd.DataFrame({
+        "Data": datas,
+        "Macrófitas_ha": np.clip(38 + 10 * saz + 0.55 * t + rng.normal(0, 3.0, n), 5, None),
+        "Clorofila_ugL": np.clip(72 + 18 * saz + rng.normal(0, 9, n), 10, None),
+        "Turbidez_NTU": np.clip(9 + 2.8 * saz + rng.normal(0, 1.6, n), 1, None),
+        "Sedimentacao_g_m2_mes": np.clip(430 + 75 * saz + 8 * t + rng.normal(0, 35, n), 120, None),
+        "Risco_hidrologico_0_100": np.clip(42 + 16 * saz + 1.2 * t + rng.normal(0, 6, n), 0, 100),
+        "Engajamento_stakeholders": np.clip(20 + 2.4 * t + rng.normal(0, 4, n), 0, 100),
+    })
+    return etapas, serie
+
+
+@st.cache_data
+def make_demo_sediment_data(seed: int = 7):
+    """Cria pontos simulados de sedimento/batimetria para mapa e gráficos."""
+    rng = np.random.default_rng(seed)
+    nomes = [
+        "R1 Margem", "R1 Centro", "R2 Margem", "R2 Centro", "R3 Centro",
+        "R4 Margem", "R4 Centro", "R5 Margem", "R5 Centro", "Tributário",
+    ]
+    lat0, lon0 = -20.022, -44.105
+    df = pd.DataFrame({
+        "Ponto": nomes,
+        "Latitude": lat0 + rng.normal(0, 0.010, len(nomes)),
+        "Longitude": lon0 + rng.normal(0, 0.014, len(nomes)),
+        "P_total_mgkg": rng.uniform(650, 2300, len(nomes)),
+        "N_total_%": rng.uniform(0.12, 0.85, len(nomes)),
+        "MO_%": rng.uniform(4.5, 19.0, len(nomes)),
+        "As_mgkg": rng.uniform(3.0, 38.0, len(nomes)),
+        "Pb_mgkg": rng.uniform(8.0, 92.0, len(nomes)),
+        "Taxa_sed_g_m2_mes": rng.uniform(180, 850, len(nomes)),
+        "Perda_volume_%": rng.uniform(8, 36, len(nomes)),
+    })
+
+    def minmax(s):
+        return (s - s.min()) / (s.max() - s.min() + EPS)
+
+    df["Score_prioridade"] = (
+        0.25 * minmax(df["P_total_mgkg"]) +
+        0.20 * minmax(df["MO_%"]) +
+        0.20 * minmax(df["As_mgkg"]) +
+        0.15 * minmax(df["Pb_mgkg"]) +
+        0.20 * minmax(df["Taxa_sed_g_m2_mes"])
+    ) * 100
+
+    df["Classe_risco"] = pd.cut(
+        df["Score_prioridade"],
+        bins=[0, 35, 65, 100],
+        labels=["Baixo", "Médio", "Alto"],
+        include_lowest=True,
+    ).astype(str)
+    return df.sort_values("Score_prioridade", ascending=False)
+
+
+@st.cache_data
+def make_demo_scenario_data():
+    anos = np.array([2024, 2030, 2040, 2050])
+    cenarios = []
+    base = 12.7
+    specs = {
+        "Referência": [-0.00, -0.55, -1.35, -2.30],
+        "Controle de erosão": [0.00, -0.30, -0.75, -1.20],
+        "Dragagem + NBS": [0.00, 0.95, 0.65, 0.25],
+        "Pressão urbana": [0.00, -0.85, -2.10, -3.35],
+    }
+    for cenario, delta in specs.items():
+        for ano, d in zip(anos, delta):
+            vol = base + d
+            risco = np.clip(100 - (vol / base) * 72 + (ano - 2024) * 0.45, 0, 100)
+            cenarios.append({
+                "Ano": int(ano),
+                "Cenário": cenario,
+                "Volume_útil_milhões_m3": round(vol, 2),
+                "Índice_risco_0_100": round(float(risco), 1),
+            })
+    return pd.DataFrame(cenarios)
+
+
+def page_sintese_integrada():
+    st.subheader("📊 Síntese Integrada do Projeto")
+    st.caption(
+        "Módulo demonstrativo com dados simulados. A ideia é transformar o relatório técnico em um painel de acompanhamento científico, "
+        "com visão por etapa, indicadores ambientais e alertas de gestão."
+    )
+
+    etapas, serie = make_demo_integrated_data()
+
+    st.sidebar.markdown("---")
+    st.sidebar.markdown("### Filtros da síntese")
+    status_sel = st.sidebar.multiselect(
+        "Status das etapas:",
+        sorted(etapas["Status"].unique()),
+        default=sorted(etapas["Status"].unique()),
+        key="sintese_status",
+    )
+    etapas_f = etapas[etapas["Status"].isin(status_sel)].copy()
+
+    media_conclusao = etapas["Conclusão_%"].mean()
+    produtos_previstos = int(etapas["Produtos_previstos"].sum())
+    produtos_entregues = int(etapas["Produtos_entregues"].sum())
+    indice_alerta = float(serie["Risco_hidrologico_0_100"].iloc[-1])
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Conclusão média", f"{media_conclusao:.1f}%")
+    c2.metric("Produtos entregues", f"{produtos_entregues}/{produtos_previstos}")
+    c3.metric("Índice de risco", f"{indice_alerta:.1f}/100")
+    c4.metric("Meses monitorados", f"{serie['Data'].nunique()}")
+
+    col_a, col_b = st.columns([1.2, 1.0])
+    with col_a:
+        fig = px.bar(
+            etapas_f,
+            x="Conclusão_%",
+            y="Etapa",
+            orientation="h",
+            color="Status",
+            text="Conclusão_%",
+            title="Andamento demonstrativo por etapa do projeto",
+            labels={"Conclusão_%": "Conclusão (%)"},
+        )
+        fig.update_traces(texttemplate="%{text:.0f}%", textposition="outside")
+        fig.update_layout(yaxis={"categoryorder": "total ascending"}, xaxis_range=[0, 105])
+        st.plotly_chart(fig, use_container_width=True)
+
+    with col_b:
+        radar = pd.DataFrame({
+            "Dimensão": [
+                "Qualidade da água", "Macrófitas", "Sedimentos",
+                "Risco hidrológico", "Governança", "OneHealth",
+            ],
+            "Índice": [72, 78, 66, 61, 48, 55],
+        })
+        fig_radar = go.Figure()
+        fig_radar.add_trace(go.Scatterpolar(
+            r=radar["Índice"],
+            theta=radar["Dimensão"],
+            fill="toself",
+            name="Condição/avanço",
+        ))
+        fig_radar.update_layout(
+            title="Radar sintético de maturidade ambiental",
+            polar=dict(radialaxis=dict(visible=True, range=[0, 100])),
+            showlegend=False,
+        )
+        st.plotly_chart(fig_radar, use_container_width=True)
+
+    st.markdown("### Séries integradas demonstrativas")
+    vars_demo = st.multiselect(
+        "Indicadores para visualizar:",
+        [c for c in serie.columns if c != "Data"],
+        default=["Macrófitas_ha", "Clorofila_ugL", "Sedimentacao_g_m2_mes", "Risco_hidrologico_0_100"],
+        key="sintese_vars",
+    )
+    if vars_demo:
+        long = serie.melt(id_vars="Data", value_vars=vars_demo, var_name="Indicador", value_name="Valor")
+        fig_ts = px.line(long, x="Data", y="Valor", color="Indicador", markers=True, title="Evolução temporal integrada")
+        st.plotly_chart(fig_ts, use_container_width=True)
+
+    st.markdown("### Matriz exploratória entre indicadores")
+    corr = serie.drop(columns="Data").corr(numeric_only=True)
+    fig_corr = px.imshow(
+        corr,
+        text_auto=".2f",
+        zmin=-1,
+        zmax=1,
+        aspect="auto",
+        title="Correlação entre indicadores simulados",
+    )
+    st.plotly_chart(fig_corr, use_container_width=True)
+
+    with st.expander("Tabela demonstrativa das etapas"):
+        st.dataframe(etapas, use_container_width=True)
+
+
+def page_sedimentos_risco():
+    st.subheader("🧱 Sedimentos, Batimetria & Risco Ambiental")
+    st.caption(
+        "Módulo demonstrativo com dados genéricos. Foi pensado para integrar assoreamento, qualidade do sedimento, "
+        "priorização de dragagem e cenários de gestão do reservatório."
+    )
+
+    df = make_demo_sediment_data()
+    cen = make_demo_scenario_data()
+
+    st.sidebar.markdown("---")
+    st.sidebar.markdown("### Filtros de sedimento")
+    risco_sel = st.sidebar.multiselect(
+        "Classe de risco:",
+        ["Baixo", "Médio", "Alto"],
+        default=["Baixo", "Médio", "Alto"],
+        key="sed_risco",
+    )
+    df_f = df[df["Classe_risco"].isin(risco_sel)].copy()
+
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Pontos avaliados", f"{len(df_f)}")
+    m2.metric("Prioridade média", f"{df_f['Score_prioridade'].mean():.1f}/100" if not df_f.empty else "-")
+    m3.metric("P total médio", f"{df_f['P_total_mgkg'].mean():.0f} mg/kg" if not df_f.empty else "-")
+    m4.metric("Taxa sed. média", f"{df_f['Taxa_sed_g_m2_mes'].mean():.0f} g/m²/mês" if not df_f.empty else "-")
+
+    col_map, col_bar = st.columns([1.15, 1.0])
+    with col_map:
+        st.markdown("### Mapa de pontos prioritários")
+        fmap = folium.Map(location=[-20.022, -44.105], zoom_start=13, tiles="OpenStreetMap")
+        color_map = {"Baixo": "green", "Médio": "orange", "Alto": "red"}
+        for _, row in df_f.iterrows():
+            popup = (
+                f"<b>{row['Ponto']}</b><br>"
+                f"Risco: {row['Classe_risco']}<br>"
+                f"Score: {row['Score_prioridade']:.1f}/100<br>"
+                f"P total: {row['P_total_mgkg']:.0f} mg/kg<br>"
+                f"Taxa sed.: {row['Taxa_sed_g_m2_mes']:.0f} g/m²/mês"
+            )
+            folium.CircleMarker(
+                location=[row["Latitude"], row["Longitude"]],
+                radius=6 + row["Score_prioridade"] / 12,
+                popup=popup,
+                color=color_map.get(row["Classe_risco"], "blue"),
+                fill=True,
+                fill_opacity=0.72,
+            ).add_to(fmap)
+        st_folium(fmap, width=760, height=520, key="sedimentos_mapa")
+
+    with col_bar:
+        st.markdown("### Ranking de intervenção")
+        fig_rank = px.bar(
+            df_f.sort_values("Score_prioridade"),
+            x="Score_prioridade",
+            y="Ponto",
+            orientation="h",
+            color="Classe_risco",
+            text="Score_prioridade",
+            title="Prioridade demonstrativa para manejo/dragagem",
+            labels={"Score_prioridade": "Score de prioridade"},
+        )
+        fig_rank.update_traces(texttemplate="%{text:.1f}", textposition="outside")
+        fig_rank.update_layout(xaxis_range=[0, 105])
+        st.plotly_chart(fig_rank, use_container_width=True)
+
+    col1, col2 = st.columns(2)
+    with col1:
+        fig_scatter = px.scatter(
+            df_f,
+            x="P_total_mgkg",
+            y="As_mgkg",
+            size="Taxa_sed_g_m2_mes",
+            color="Classe_risco",
+            hover_name="Ponto",
+            title="Nutrientes, metal/metaloide e sedimentação",
+            labels={
+                "P_total_mgkg": "Fósforo total no sedimento (mg/kg)",
+                "As_mgkg": "As (mg/kg)",
+            },
+        )
+        st.plotly_chart(fig_scatter, use_container_width=True)
+
+    with col2:
+        fig_box = px.box(
+            df_f,
+            x="Classe_risco",
+            y="Perda_volume_%",
+            points="all",
+            title="Perda de volume simulada por classe de risco",
+            labels={"Perda_volume_%": "Perda de volume (%)"},
+        )
+        st.plotly_chart(fig_box, use_container_width=True)
+
+    st.markdown("### Cenários demonstrativos de gestão")
+    col3, col4 = st.columns(2)
+    with col3:
+        fig_vol = px.line(
+            cen,
+            x="Ano",
+            y="Volume_útil_milhões_m3",
+            color="Cenário",
+            markers=True,
+            title="Projeção conceitual de volume útil",
+            labels={"Volume_útil_milhões_m3": "Volume útil (milhões m³)"},
+        )
+        st.plotly_chart(fig_vol, use_container_width=True)
+    with col4:
+        fig_risk = px.line(
+            cen,
+            x="Ano",
+            y="Índice_risco_0_100",
+            color="Cenário",
+            markers=True,
+            title="Índice conceitual de risco ambiental/hidrológico",
+            labels={"Índice_risco_0_100": "Índice de risco (0–100)"},
+        )
+        fig_risk.update_yaxes(range=[0, 100])
+        st.plotly_chart(fig_risk, use_container_width=True)
+
+    with st.expander("Tabelas demonstrativas"):
+        st.markdown("**Pontos simulados de sedimento**")
+        st.dataframe(df, use_container_width=True)
+        st.markdown("**Cenários simulados**")
+        st.dataframe(cen, use_container_width=True)
+
+
+
+
+# =====================================================================
 # PÁGINA 1 — MACRÓFITAS
 # =====================================================================
-if pagina == "🌿 Macrófitas":
+if pagina == "📊 Síntese Integrada":
+    page_sintese_integrada()
+
+elif pagina == "🌿 Macrófitas":
     st.subheader("🌿 Monitoramento de Macrófitas")
 
     df_area = pd.read_csv(csv_path)
@@ -328,7 +673,7 @@ if pagina == "🌿 Macrófitas":
 # =====================================================================
 # PÁGINA 2 — QUALIDADE DA ÁGUA
 # =====================================================================
-else:
+elif pagina == "💧 Qualidade da Água":
     st.subheader("💧 Qualidade da Água")
     st.caption(
         "Derivado de DATA_*.tif (EPSG:3857) • filtro: remove macrófitas (NDVI > 0.5) • "
@@ -707,14 +1052,8 @@ else:
         "Pixels zerados ocultos. NDWI exibido apenas para diagnóstico."
     )
 
-
-
-
-
-
-
-
-
-
-
-
+# =====================================================================
+# PÁGINA 4 — SEDIMENTOS, BATIMETRIA & RISCO
+# =====================================================================
+elif pagina == "🧱 Sedimentos & Risco":
+    page_sedimentos_risco()
