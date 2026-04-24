@@ -52,7 +52,7 @@ with st.sidebar:
             "📊 Síntese Integrada",
             "🌿 Macrófitas",
             "💧 Qualidade da Água",
-            "🌎 Uso do Solo & ICB",
+            "🌎 Uso do Solo & Água",
             "🧱 Sedimentos & Risco",
         ],
         index=0
@@ -62,7 +62,7 @@ with st.sidebar:
 # HEADER
 # =====================================================================
 st.markdown("# AQUASMART • Dashboard Científico")
-st.caption("Macrófitas • Qualidade da Água • Uso do solo & ICB • Síntese integrada • Sedimentos e risco ambiental")
+st.caption("Macrófitas • Qualidade da Água • Uso do solo e qualidade da água in situ • Síntese integrada • Sedimentos e risco ambiental")
 st.markdown("---")
 
 # =====================================================================
@@ -212,12 +212,12 @@ def make_demo_integrated_data(seed: int = 42):
 
     serie = pd.DataFrame({
         "Data": datas,
-        "Macrófitas_ha": np.clip(38 + 10 * saz + 0.55 * t + rng.normal(0, 3.0, n), 5, None),
-        "Clorofila_ugL": np.clip(72 + 18 * saz + rng.normal(0, 9, n), 10, None),
-        "Turbidez_NTU": np.clip(9 + 2.8 * saz + rng.normal(0, 1.6, n), 1, None),
-        "Sedimentacao_g_m2_mes": np.clip(430 + 75 * saz + 8 * t + rng.normal(0, 35, n), 120, None),
-        "Risco_hidrologico_0_100": np.clip(42 + 16 * saz + 1.2 * t + rng.normal(0, 6, n), 0, 100),
-        "Engajamento_stakeholders": np.clip(20 + 2.4 * t + rng.normal(0, 4, n), 0, 100),
+        "Área de macrófitas (ha)": np.clip(38 + 10 * saz + 0.55 * t + rng.normal(0, 3.0, n), 5, None),
+        "Clorofila-a (microgramas por litro)": np.clip(72 + 18 * saz + rng.normal(0, 9, n), 10, None),
+        "Turbidez (unidade nefelométrica)": np.clip(9 + 2.8 * saz + rng.normal(0, 1.6, n), 1, None),
+        "Sedimentação (gramas por metro quadrado por mês)": np.clip(430 + 75 * saz + 8 * t + rng.normal(0, 35, n), 120, None),
+        "Índice de risco hidrológico (0–100)": np.clip(42 + 16 * saz + 1.2 * t + rng.normal(0, 6, n), 0, 100),
+        "Engajamento das partes interessadas": np.clip(20 + 2.4 * t + rng.normal(0, 4, n), 0, 100),
     })
     return etapas, serie
 
@@ -289,8 +289,8 @@ def make_demo_scenario_data():
 
 
 @st.cache_data
-def make_demo_landuse_icb_data(seed: int = 123):
-    """Dados simulados para módulo integrado de uso do solo + qualidade da água do ICB."""
+def make_demo_landuse_water_data(seed: int = 123):
+    """Dados simulados para módulo integrado de uso do solo e qualidade da água."""
     rng = np.random.default_rng(seed)
 
     subbacias = [
@@ -340,7 +340,7 @@ def make_demo_landuse_icb_data(seed: int = 123):
                 })
     uso = pd.DataFrame(rows)
 
-    # Pontos amostrais demonstrativos do ICB: 5 regiões do reservatório + tributários/saída.
+    # Pontos amostrais demonstrativos: cinco regiões do reservatório, tributários e saída.
     pontos = pd.DataFrame({
         "Ponto": ["R1", "R2", "R3", "R4", "R5", "Trib. Ibirité", "Trib. Pintado", "Saída"],
         "Tipo": ["Reservatório", "Reservatório", "Reservatório", "Reservatório", "Reservatório", "Tributário", "Tributário", "Defluente"],
@@ -435,17 +435,17 @@ def make_demo_landuse_icb_data(seed: int = 123):
     return uso, agua, pontos, perfis
 
 
-def page_uso_solo_icb():
-    st.subheader("🌎 Uso do Solo & Qualidade da Água — ICB")
+def page_uso_solo_agua():
+    st.subheader("🌎 Uso do Solo & Qualidade da Água")
     st.caption(
-        "Módulo demonstrativo com dados simulados. A proposta é integrar LUCC da bacia, pontos limnológicos do ICB, "
+        "Módulo demonstrativo com dados simulados. A proposta é integrar uso e cobertura do solo da bacia, pontos limnológicos do grupo de qualidade da água, "
         "nutrientes, sonda multiparâmetros, fitoplâncton, metabolismo e perfis verticais."
     )
 
-    uso, agua, pontos, perfis = make_demo_landuse_icb_data()
+    uso, agua, pontos, perfis = make_demo_landuse_water_data()
 
     st.sidebar.markdown("---")
-    st.sidebar.markdown("### Filtros • Uso do Solo & ICB")
+    st.sidebar.markdown("### Filtros • Uso do Solo & Água")
     anos_disp = sorted(uso["Ano"].unique())
     ano_sel = st.sidebar.selectbox(
         "Ano de uso do solo:",
@@ -460,29 +460,59 @@ def page_uso_solo_icb():
         key="uso_subbacias",
     )
     pontos_sel = st.sidebar.multiselect(
-        "Pontos ICB:",
+        "Pontos de qualidade da água:",
         sorted(agua["Ponto"].unique()),
         default=sorted(agua["Ponto"].unique()),
-        key="icb_pontos",
+        key="pontos_qualidade_agua",
     )
-    var_icb = st.sidebar.selectbox(
-        "Variável ICB principal:",
-        [
-            "PT_ugL", "NT_mgL", "COD_mgL", "Ortofosfato_ugL", "Nitrato_mgL", "Amonia_mgL",
-            "Clorofila_ugL", "Ficocianina_ugL", "Turbidez_NTU", "Secchi_cm", "OD_mgL",
-            "Condutividade_uScm", "Fitoplancton_cel_mL", "AF_anoxia_%", "Schmidt_J_m2",
-            "PPB_gO2_m2_d", "Respiracao_gO2_m2_d", "PLE_gO2_m2_d",
-        ],
+
+    indicadores_agua = {
+        "Fósforo total (microgramas por litro)": "PT_ugL",
+        "Nitrogênio total (miligramas por litro)": "NT_mgL",
+        "Carbono orgânico dissolvido (miligramas por litro)": "COD_mgL",
+        "Ortofosfato (microgramas por litro)": "Ortofosfato_ugL",
+        "Nitrato (miligramas por litro)": "Nitrato_mgL",
+        "Amônia (miligramas por litro)": "Amonia_mgL",
+        "Clorofila-a (microgramas por litro)": "Clorofila_ugL",
+        "Ficocianina (microgramas por litro)": "Ficocianina_ugL",
+        "Turbidez (unidade nefelométrica)": "Turbidez_NTU",
+        "Transparência da água pelo disco de Secchi (centímetros)": "Secchi_cm",
+        "Oxigênio dissolvido (miligramas por litro)": "OD_mgL",
+        "Condutividade elétrica (microsiemens por centímetro)": "Condutividade_uScm",
+        "Densidade de fitoplâncton (células por mililitro)": "Fitoplancton_cel_mL",
+        "Fator de anoxia (porcentagem)": "AF_anoxia_%",
+        "Estabilidade térmica de Schmidt (joules por metro quadrado)": "Schmidt_J_m2",
+        "Produção primária bruta (gramas de oxigênio por metro quadrado por dia)": "PPB_gO2_m2_d",
+        "Respiração do ecossistema (gramas de oxigênio por metro quadrado por dia)": "Respiracao_gO2_m2_d",
+        "Produção líquida do ecossistema (gramas de oxigênio por metro quadrado por dia)": "PLE_gO2_m2_d",
+    }
+    nomes_colunas_agua = {valor: chave for chave, valor in indicadores_agua.items()}
+    nomes_colunas_agua.update({
+        "Data": "Data",
+        "Ponto": "Ponto",
+        "Tipo": "Tipo",
+        "Sub-bacia_associada": "Sub-bacia associada",
+        "Latitude": "Latitude",
+        "Longitude": "Longitude",
+        "Profundidade_m": "Profundidade (metros)",
+        "Temperatura_C": "Temperatura da água (graus Celsius)",
+        "pH": "Potencial hidrogeniônico",
+    })
+
+    var_label = st.sidebar.selectbox(
+        "Indicador principal de qualidade da água:",
+        list(indicadores_agua.keys()),
         index=0,
-        key="icb_var",
+        key="indicador_qualidade_agua",
     )
+    var_icb = indicadores_agua[var_label]
 
     uso_f = uso[(uso["Ano"] == ano_sel) & (uso["Sub-bacia"].isin(sub_sel))].copy()
     agua_f = agua[agua["Ponto"].isin(pontos_sel)].copy()
     pontos_f = pontos[pontos["Ponto"].isin(pontos_sel)].copy()
 
     if uso_f.empty or agua_f.empty:
-        st.warning("Selecione ao menos uma sub-bacia e um ponto ICB para visualizar o módulo.")
+        st.warning("Selecione ao menos uma sub-bacia e um ponto de qualidade da água para visualizar o módulo.")
         return
 
     # Indicadores de síntese
@@ -495,8 +525,8 @@ def page_uso_solo_icb():
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Urbanização média", f"{urbano_pct:.1f}%")
     c2.metric("Vegetação média", f"{veg_pct:.1f}%")
-    c3.metric(f"Média • {var_icb}", f"{media_var:,.2f}")
-    c4.metric("Pontos com PT elevado", f"{int(pontos_crit)}")
+    c3.metric(f"Média • {var_label}", f"{media_var:,.2f}")
+    c4.metric("Pontos com fósforo total elevado", f"{int(pontos_crit)}")
 
     st.markdown("### Uso e cobertura do solo na bacia")
     col_lu1, col_lu2 = st.columns([1.05, 1.0])
@@ -524,7 +554,7 @@ def page_uso_solo_icb():
         )
         st.plotly_chart(fig_area, use_container_width=True)
 
-    st.markdown("### Pontos ICB e variabilidade espacial")
+    st.markdown("### Pontos de qualidade da água e variabilidade espacial")
     col_map, col_box = st.columns([1.05, 1.0])
     with col_map:
         mapa = folium.Map(location=[-20.023, -44.104], zoom_start=13, tiles="OpenStreetMap")
@@ -537,7 +567,7 @@ def page_uso_solo_icb():
                 f"<b>{row['Ponto']}</b><br>"
                 f"Tipo: {row['Tipo']}<br>"
                 f"Sub-bacia: {row['Sub-bacia_associada']}<br>"
-                f"{var_icb}: {row[var_icb]:.2f}"
+                f"{var_label}: {row[var_icb]:.2f}"
             )
             folium.CircleMarker(
                 location=[row["Latitude"], row["Longitude"]],
@@ -556,7 +586,8 @@ def page_uso_solo_icb():
             y=var_icb,
             color="Tipo",
             points="all",
-            title=f"Distribuição por ponto — {var_icb}",
+            title=f"Distribuição por ponto — {var_label}",
+            labels={var_icb: var_label},
         )
         fig_box.update_layout(xaxis_tickangle=-35)
         st.plotly_chart(fig_box, use_container_width=True)
@@ -571,7 +602,8 @@ def page_uso_solo_icb():
             y=var_icb,
             color="Tipo",
             markers=True,
-            title=f"Série temporal mensal — {var_icb}",
+            title=f"Série temporal mensal — {var_label}",
+            labels={var_icb: var_label},
         )
         st.plotly_chart(fig_ts, use_container_width=True)
 
@@ -579,12 +611,13 @@ def page_uso_solo_icb():
         vars_heat = ["PT_ugL", "NT_mgL", "COD_mgL", "Clorofila_ugL", "Turbidez_NTU", "Secchi_cm", "OD_mgL", "AF_anoxia_%"]
         heat = agua_f.groupby("Ponto")[vars_heat].mean()
         heat_z = (heat - heat.mean()) / (heat.std(ddof=0) + EPS)
+        heat_z = heat_z.rename(columns=nomes_colunas_agua)
         fig_heat = px.imshow(
             heat_z,
             aspect="auto",
             text_auto=".1f",
             title="Heatmap padronizado de pressão limnológica",
-            labels=dict(color="Escore-z"),
+            labels=dict(color="Valor padronizado"),
         )
         st.plotly_chart(fig_heat, use_container_width=True)
 
@@ -606,29 +639,34 @@ def page_uso_solo_icb():
         0.14 * (1 - pressao["OD_mgL"] / pressao["OD_mgL"].max())
     ) * 100
 
+    pressao_plot = pressao.rename(columns={
+        "Urbano_%": "Área urbana (%)",
+        "Vegetação_%": "Cobertura vegetal (%)",
+        "PT_ugL": "Fósforo total (microgramas por litro)",
+        "Índice_trófico_demo": "Índice demonstrativo de pressão trófica (0–100)",
+    })
+
     col_rel1, col_rel2 = st.columns([1.0, 1.0])
     with col_rel1:
         fig_rel = px.scatter(
-            pressao,
-            x="Urbano_%",
-            y="Índice_trófico_demo",
-            size="PT_ugL",
-            color="Vegetação_%",
+            pressao_plot,
+            x="Área urbana (%)",
+            y="Índice demonstrativo de pressão trófica (0–100)",
+            size="Fósforo total (microgramas por litro)",
+            color="Cobertura vegetal (%)",
             hover_name="Sub-bacia",
             title="Urbanização e pressão trófica demonstrativa",
-            labels={"Urbano_%": "Urbano (%)", "Índice_trófico_demo": "Índice trófico demo (0–100)"},
         )
         st.plotly_chart(fig_rel, use_container_width=True)
 
     with col_rel2:
         fig_rank = px.bar(
-            pressao.sort_values("Índice_trófico_demo"),
-            x="Índice_trófico_demo",
+            pressao_plot.sort_values("Índice demonstrativo de pressão trófica (0–100)"),
+            x="Índice demonstrativo de pressão trófica (0–100)",
             y="Sub-bacia",
             orientation="h",
-            text="Índice_trófico_demo",
+            text="Índice demonstrativo de pressão trófica (0–100)",
             title="Ranking conceitual de sub-bacias críticas",
-            labels={"Índice_trófico_demo": "Índice trófico demo"},
         )
         fig_rank.update_traces(texttemplate="%{text:.1f}", textposition="outside")
         fig_rank.update_layout(xaxis_range=[0, 105])
@@ -642,29 +680,43 @@ def page_uso_solo_icb():
         key="perfil_data",
     )
     perfil_f = perfis[perfis["Data"].dt.strftime("%Y-%m-%d") == data_perfil]
-    perfil_var = st.selectbox(
-        "Variável do perfil:",
-        ["Temperatura_C", "OD_mgL", "Ortofosfato_ugL", "Condutividade_uScm"],
+    indicadores_perfil = {
+        "Temperatura da água (graus Celsius)": "Temperatura_C",
+        "Oxigênio dissolvido (miligramas por litro)": "OD_mgL",
+        "Ortofosfato (microgramas por litro)": "Ortofosfato_ugL",
+        "Condutividade elétrica (microsiemens por centímetro)": "Condutividade_uScm",
+    }
+    perfil_label = st.selectbox(
+        "Indicador do perfil:",
+        list(indicadores_perfil.keys()),
         index=1,
-        key="perfil_var",
+        key="indicador_perfil",
     )
+    perfil_var = indicadores_perfil[perfil_label]
     fig_perfil = px.line(
         perfil_f,
         x=perfil_var,
         y="Profundidade_m",
         markers=True,
-        title=f"Perfil vertical — {perfil_var} • {data_perfil}",
+        title=f"Perfil vertical — {perfil_label} • {data_perfil}",
+        labels={perfil_var: perfil_label, "Profundidade_m": "Profundidade (metros)"},
     )
-    fig_perfil.update_yaxes(autorange="reversed", title="Profundidade (m)")
+    fig_perfil.update_yaxes(autorange="reversed", title="Profundidade (metros)")
     st.plotly_chart(fig_perfil, use_container_width=True)
 
     with st.expander("Tabelas demonstrativas do módulo"):
         st.markdown("**Uso e cobertura do solo**")
-        st.dataframe(uso, use_container_width=True)
-        st.markdown("**Qualidade da água / ICB**")
-        st.dataframe(agua, use_container_width=True)
+        st.dataframe(
+            uso.rename(columns={"Percentual_%": "Percentual (%)", "Área_km2": "Área (quilômetros quadrados)"}),
+            use_container_width=True,
+        )
+        st.markdown("**Qualidade da água medida em campo**")
+        st.dataframe(agua.rename(columns=nomes_colunas_agua), use_container_width=True)
         st.markdown("**Pontos amostrais**")
-        st.dataframe(pontos, use_container_width=True)
+        st.dataframe(
+            pontos.rename(columns={"Sub-bacia_associada": "Sub-bacia associada", "Profundidade_m": "Profundidade (metros)"}),
+            use_container_width=True,
+        )
 
 
 def page_sintese_integrada():
@@ -689,7 +741,7 @@ def page_sintese_integrada():
     media_conclusao = etapas["Conclusão_%"].mean()
     produtos_previstos = int(etapas["Produtos_previstos"].sum())
     produtos_entregues = int(etapas["Produtos_entregues"].sum())
-    indice_alerta = float(serie["Risco_hidrologico_0_100"].iloc[-1])
+    indice_alerta = float(serie["Índice de risco hidrológico (0–100)"].iloc[-1])
 
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Conclusão média", f"{media_conclusao:.1f}%")
@@ -739,7 +791,7 @@ def page_sintese_integrada():
     vars_demo = st.multiselect(
         "Indicadores para visualizar:",
         [c for c in serie.columns if c != "Data"],
-        default=["Macrófitas_ha", "Clorofila_ugL", "Sedimentacao_g_m2_mes", "Risco_hidrologico_0_100"],
+        default=["Área de macrófitas (ha)", "Clorofila-a (microgramas por litro)", "Sedimentação (gramas por metro quadrado por mês)", "Índice de risco hidrológico (0–100)"],
         key="sintese_vars",
     )
     if vars_demo:
@@ -786,7 +838,7 @@ def page_sedimentos_risco():
     m1, m2, m3, m4 = st.columns(4)
     m1.metric("Pontos avaliados", f"{len(df_f)}")
     m2.metric("Prioridade média", f"{df_f['Score_prioridade'].mean():.1f}/100" if not df_f.empty else "-")
-    m3.metric("P total médio", f"{df_f['P_total_mgkg'].mean():.0f} mg/kg" if not df_f.empty else "-")
+    m3.metric("Fósforo total médio", f"{df_f['P_total_mgkg'].mean():.0f} mg/kg" if not df_f.empty else "-")
     m4.metric("Taxa sed. média", f"{df_f['Taxa_sed_g_m2_mes'].mean():.0f} g/m²/mês" if not df_f.empty else "-")
 
     col_map, col_bar = st.columns([1.15, 1.0])
@@ -799,7 +851,7 @@ def page_sedimentos_risco():
                 f"<b>{row['Ponto']}</b><br>"
                 f"Risco: {row['Classe_risco']}<br>"
                 f"Score: {row['Score_prioridade']:.1f}/100<br>"
-                f"P total: {row['P_total_mgkg']:.0f} mg/kg<br>"
+                f"Fósforo total: {row['P_total_mgkg']:.0f} mg/kg<br>"
                 f"Taxa sed.: {row['Taxa_sed_g_m2_mes']:.0f} g/m²/mês"
             )
             folium.CircleMarker(
@@ -840,7 +892,7 @@ def page_sedimentos_risco():
             title="Nutrientes, metal/metaloide e sedimentação",
             labels={
                 "P_total_mgkg": "Fósforo total no sedimento (mg/kg)",
-                "As_mgkg": "As (mg/kg)",
+                "As_mgkg": "Arsênio no sedimento (mg/kg)",
             },
         )
         st.plotly_chart(fig_scatter, use_container_width=True)
@@ -1025,7 +1077,7 @@ elif pagina == "🌿 Macrófitas":
         else:
             st.info("Clique em um ponto no mapa para ver a série temporal.")
 
-    st.subheader("📷 Visualização: RGB | NDVI | Classificação")
+    st.subheader("📷 Visualização: Cor verdadeira | Índice de vegetação | Classificação")
     fig_path = os.path.join(output_vis_folder, f"fig_macrofitas_{selected_date}.png")
     if os.path.exists(fig_path):
         st.image(Image.open(fig_path), use_column_width=True)
@@ -1056,8 +1108,8 @@ elif pagina == "🌿 Macrófitas":
 elif pagina == "💧 Qualidade da Água":
     st.subheader("💧 Qualidade da Água")
     st.caption(
-        "Derivado de DATA_*.tif (EPSG:3857) • filtro: remove macrófitas (NDVI > 0.5) • "
-        "pixels zerados ocultos • NDWI apenas diagnóstico."
+        "Derivado de DATA_*.tif • filtro: remove macrófitas por índice de vegetação • "
+        "pixels zerados ocultos • índice de água apenas diagnóstico."
     )
 
     NDVI_MACROFITAS_THR = 0.50
@@ -1256,10 +1308,10 @@ elif pagina == "💧 Qualidade da Água":
 
     vals = map_arr[np.isfinite(map_arr)]
     if vals.size == 0:
-        st.warning("Não sobraram pixels válidos após filtro NDVI e remoção de zeros.")
+        st.warning("Não sobraram pixels válidos após filtro de vegetação e remoção de zeros.")
         st.stop()
 
-    st.markdown("### 📊 Estatística espacial (após filtro NDVI + zeros)")
+    st.markdown("### 📊 Estatística espacial (após filtro de vegetação + zeros)")
     stats = {
         "n_pixels": int(vals.size),
         "média": float(np.nanmean(vals)),
@@ -1341,7 +1393,7 @@ elif pagina == "💧 Qualidade da Água":
         <b>{map_title}</b><br/>
         escala fixa: [{vmin_fixed:.2f}, {vmax_fixed:.2f}] {unit}<br/>
         janela visual (p2–p98): [{p2:.2f}, {p98:.2f}] {unit}<br/>
-        filtro: NDVI ≤ {NDVI_MACROFITAS_THR:.2f} (remove macrófitas) • pixels zerados: ocultos<br/>
+        filtro: índice de vegetação ≤ {NDVI_MACROFITAS_THR:.2f} (remove macrófitas) • pixels zerados: ocultos<br/>
         colormap: {cmap_name} • gamma: {gamma:.2f}
     </div>
     """
@@ -1414,29 +1466,29 @@ elif pagina == "💧 Qualidade da Água":
         
 
     st.markdown("---")
-    st.markdown("### 🧪 Diagnóstico (NDVI e NDWI) — data selecionada")
+    st.markdown("### 🧪 Diagnóstico dos índices espectrais — data selecionada")
 
-    with st.expander("Ver NDVI e NDWI (mapas)"):
+    with st.expander("Ver índice de vegetação e índice de água (mapas)"):
         cA, cB = st.columns(2)
         with cA:
             ndvi_u8, ndvi_min, ndvi_max = normalize_to_uint8_diag(ndvi_A)
-            st.caption(f"NDVI • escala [{ndvi_min:.3f}, {ndvi_max:.3f}]")
+            st.caption(f"Índice de vegetação • escala [{ndvi_min:.3f}, {ndvi_max:.3f}]")
             st.image(colormap_rgba(ndvi_u8, "viridis"), use_column_width=True)
         with cB:
             ndwi_u8, ndwi_min, ndwi_max = normalize_to_uint8_diag(ndwi_A)
-            st.caption(f"NDWI • escala [{ndwi_min:.3f}, {ndwi_max:.3f}]")
+            st.caption(f"Índice de água • escala [{ndwi_min:.3f}, {ndwi_max:.3f}]")
             st.image(colormap_rgba(ndwi_u8, "cividis"), use_column_width=True)
 
     st.caption(
-        "Qualidade da Água • filtro: NDVI ≤ 0.5 (remove macrófitas). "
-        "Pixels zerados ocultos. NDWI exibido apenas para diagnóstico."
+        "Qualidade da Água • filtro por índice de vegetação para remover macrófitas. "
+        "Pixels zerados ocultos. Índice de água exibido apenas para diagnóstico."
     )
 
 # =====================================================================
-# PÁGINA 4 — USO DO SOLO & QUALIDADE DA ÁGUA ICB
+# PÁGINA 4 — USO DO SOLO & QUALIDADE DA ÁGUA
 # =====================================================================
-elif pagina == "🌎 Uso do Solo & ICB":
-    page_uso_solo_icb()
+elif pagina == "🌎 Uso do Solo & Água":
+    page_uso_solo_agua()
 
 # =====================================================================
 # PÁGINA 5 — SEDIMENTOS, BATIMETRIA & RISCO
