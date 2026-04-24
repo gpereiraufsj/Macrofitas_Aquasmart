@@ -1311,7 +1311,7 @@ def make_mapbiomas_folium(arr, meta, title: str, legend_items, key_suffix: str, 
     ).add_to(mapa)
 
     # Força o enquadramento no raster. Isso evita o mapa abrir no zoom global.
-    mapa.fit_bounds(folium_bounds, padding=(80, 80))
+    mapa.fit_bounds(folium_bounds, padding=(60, 60))
 
     mapa.get_root().html.add_child(folium.Element(mapbiomas_legend_html(title, legend_items)))
     return st_folium(
